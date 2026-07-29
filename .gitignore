@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Eval-pool data and raw score archives — regenerable, not code
+pools/
+scores/
+ckpts/
+runs/
+
+# Deploy staging (generated from generators/ by submit.prepare)
+deploy/
+
+# Secrets — never commit
+SECRET-*
+*.mnemonic
