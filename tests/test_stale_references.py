@@ -59,3 +59,11 @@ class StaleReferenceTests(TestCase):
         readme = (ROOT / "README.md").read_text()
         self.assertIn("HF_TOKEN=hf_replace_me", template)
         self.assertIn("set -a; source .env; set +a", readme)
+
+    def test_hippius_requires_only_the_hub_token(self):
+        template = (ROOT / "example.env").read_text()
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("HIPPIUS_HUB_TOKEN=replace_me", template)
+        self.assertNotIn("HIPPIUS_S3", template)
+        self.assertNotIn("POOL_S3", template)
+        self.assertIn("no Hippius S3 or pool-S3 credentials are required", readme)

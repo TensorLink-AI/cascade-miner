@@ -85,8 +85,9 @@ source .env
 set +a
 ```
 
-At minimum, configure the Hippius registry credentials for deployment. Set
-`HF_TOKEN` for the controller's evaluation-pool revision checks and downloads;
+For Hippius, this harness only needs `HIPPIUS_HUB_TOKEN` to upload generator
+artefacts for deployment; no Hippius S3 or pool-S3 credentials are required.
+Set `HF_TOKEN` for the controller's evaluation-pool revision checks and downloads;
 authenticated requests avoid the public Hub's low unauthenticated rate limits.
 The first pool sync downloads the full dataset and can be slow or rate-limited
 without `HF_TOKEN`; unchanged later revisions do not download it again. Set
