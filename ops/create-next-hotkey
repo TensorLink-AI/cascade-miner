@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "REFUSED: implement an operator-owned, non-interactive hotkey creation wrapper; never embed wallet secrets here." >&2
+exit 2

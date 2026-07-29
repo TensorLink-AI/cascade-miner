@@ -95,8 +95,21 @@ def rent(name: str, ttl_hours: int = 10, gpu: str = "RTX4090", retries: int = 8)
         if any(s in blob for s in ("already in progress", "not found", "no nodes available")):
             time.sleep(45)
             continue
+        if out.returncode:
+            raise RuntimeError(
+                f"lium failed to rent {name}: {(out.stderr or out.stdout).strip()[-2000:]}"
+            )
         return
     raise RuntimeError(f"could not rent {name} after {retries} attempts")
+
+
+def stop(name: str) -> None:
+    """Terminate exactly one named pod and fail if Lium does not confirm it."""
+    out = _lium("rm", name, timeout=300)
+    if out.returncode:
+        raise RuntimeError(
+            f"lium failed to stop {name}: {(out.stderr or out.stdout).strip()[-2000:]}"
+        )
 
 
 def list_pods() -> list[Pod]:

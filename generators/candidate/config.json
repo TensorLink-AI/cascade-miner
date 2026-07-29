@@ -1,0 +1,6 @@
+{
+  "name": "bootstrap-seasonal",
+  "description": "Minimal deterministic starter for the Cascade miner harness",
+  "min_length": 128,
+  "max_length": 1024
+}

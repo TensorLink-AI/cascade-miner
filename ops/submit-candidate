@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "REFUSED: implement an operator-owned submission wrapper that verifies, uploads, and commits only the approved candidate." >&2
+exit 2

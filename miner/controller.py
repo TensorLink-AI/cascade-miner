@@ -575,6 +575,9 @@ class Controller:
                     "round_id": round_id,
                     "pass": passes[key],
                     "candidate_digest": candidate_digest(self.root),
+                    "candidate_path": request_data.get(
+                        "candidate_path", "generators/candidate"
+                    ),
                     "estimated_hours": request_data.get("estimated_hours"),
                 }
                 if self.mode == "human" or action not in self.autonomous_actions:

@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "REFUSED: implement an operator-owned registration wrapper; registration spends funds and requires protected wallet access." >&2
+exit 2

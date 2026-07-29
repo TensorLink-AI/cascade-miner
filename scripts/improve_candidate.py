@@ -31,8 +31,9 @@ Perform one bounded improvement pass:
 4. Run static verification and inexpensive deterministic checks. When another
    capability is needed, write runs/agent-request.json with one action from
    gpu_evaluation, create_hotkey, register_hotkey, or submit_candidate, plus a
-   reason and optional estimated_hours. Example:
-   {{"action":"gpu_evaluation","reason":"...","estimated_hours":1}}.
+   reason, candidate_path, and optional estimated_hours. Example:
+   {{"action":"gpu_evaluation","reason":"...",
+     "candidate_path":"generators/candidate","estimated_hours":1}}.
    Never execute these privileged actions yourself.
 5. Record the hypothesis and checks in notes/EXPERIMENTS.md without claiming an
    unmeasured score improvement.

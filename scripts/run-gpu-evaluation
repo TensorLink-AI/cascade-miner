@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Approved Lium boundary: paired king/challenger evaluation on one GPU pod.
+
+This non-interactive program rents paid compute. Invoke it only through an
+operator-approved or explicitly allowlisted controller action.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).absolute().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from miner import pods  # noqa: E402 - executable must add the repository root first
+
+
+def approval_context(event: dict[str, Any]) -> dict[str, Any]:
+    """Accept both autonomous-action and approved-action event shapes."""
+    context = event.get("context")
+    if not isinstance(context, dict):
+        approval = event.get("approval", {})
+        context = approval.get("context") if isinstance(approval, dict) else None
+    if not isinstance(context, dict):
+        raise ValueError("gpu evaluation event has no approval context")
+    return context
+
+
+def contained_candidate(root: Path, value: object) -> Path:
+    candidate = Path(str(value or "generators/candidate"))
+    candidate = candidate if candidate.is_absolute() else root / candidate
+    candidate = candidate.resolve()
+    generators = (root / "generators").resolve()
+    if candidate.parent != generators or candidate.name == "king-control":
+        raise ValueError("candidate_path must name one direct child of generators/")
+    required = {"generator.py", "config.json", "requirements.txt"}
+    missing = sorted(name for name in required if not (candidate / name).is_file())
+    if missing:
+        raise ValueError(f"candidate {candidate} is missing: {', '.join(missing)}")
+    return candidate
+
+
+def parse_seeds(value: str) -> list[int]:
+    seeds = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
+        raise ValueError("CASCADE_EVAL_SEEDS must contain distinct non-negative integers")
+    return seeds
+
+
+def wait_for_pod(name: str, timeout: int = 600) -> pods.Pod:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        match = next((pod for pod in pods.list_pods() if pod.name == name), None)
+        if match is not None:
+            return match
+        time.sleep(5)
+    raise TimeoutError(f"rented pod {name} did not become ready within {timeout}s")
+
+
+def checked_remote(pod: pods.Pod, argv: list[str], timeout: int) -> None:
+    command = (
+        f"cd {shlex.quote(pods.REMOTE_ROOT)} && "
+        + " ".join(shlex.quote(arg) for arg in argv)
+    )
+    result = pod.ssh(command, timeout=timeout)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[-4000:]
+        raise RuntimeError(f"remote evaluation failed ({result.returncode}): {detail}")
+
+
+def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
+    context = approval_context(event)
+    candidate = contained_candidate(root, context.get("candidate_path"))
+    estimated_hours = float(context.get("estimated_hours") or 2.0)
+    if not math.isfinite(estimated_hours) or estimated_hours <= 0:
+        raise ValueError("estimated_hours must be a positive finite number")
+    train_hours = float(os.environ.get("CASCADE_TRAIN_HOURS", "1"))
+    if not math.isfinite(train_hours) or train_hours <= 0:
+        raise ValueError("CASCADE_TRAIN_HOURS must be positive")
+    seeds = parse_seeds(os.environ.get("CASCADE_EVAL_SEEDS", "0,1,2"))
+
+    state_path = Path(os.environ.get(
+        "CASCADE_MINER_STATE", root / "runs/controller-state.json"
+    ))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    king_ref = state.get("last_receipt", {}).get("summary", {}).get("king_gen_ref")
+    if not king_ref:
+        raise ValueError(f"latest receipt in {state_path} has no king_gen_ref")
+
+    pools_root = root / "pools/snapshots"
+    if not pools_root.is_dir():
+        raise ValueError(f"evaluation pools are missing: {pools_root}")
+    cascade_dir = Path(os.environ.get("CASCADE_DIR", "/root/cascade")).resolve()
+    chain_toml = cascade_dir / "chain.toml"
+    pod_name = f"cascade-eval-{int(time.time())}-{os.getpid()}"
+    pod: pods.Pod | None = None
+    puller: subprocess.Popen | None = None
+    rented = False
+
+    (root / "runs").mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="king-control-", dir=root / "runs") as staging:
+        king = Path(staging) / "king-control"
+        fetch = subprocess.run(
+            [sys.executable, "-m", "cascade.miner.cli", "fetch", str(king_ref),
+             "--out", str(king), "--chain-toml", str(chain_toml),
+             "--network", os.environ.get("CASCADE_NETWORK", "finney")],
+            cwd=root, capture_output=True, text=True,
+        )
+        if fetch.returncode:
+            raise RuntimeError(
+                f"failed to fetch king control: {(fetch.stderr or fetch.stdout).strip()[-2000:]}"
+            )
+
+        try:
+            ttl_hours = max(1, math.ceil(estimated_hours + 1))
+            pods.rent(pod_name, ttl_hours=ttl_hours,
+                      gpu=os.environ.get("CASCADE_GPU", "RTX4090"))
+            rented = True
+            pod = wait_for_pod(pod_name)
+            pods.assert_single_gpu()
+            pods.check_ttl_covers(pod, estimated_hours)
+            pods.provision(pod, str(cascade_dir), [str(king), str(candidate)], str(pools_root))
+            pod.push(f"{root / 'miner'}/", f"{pods.REMOTE_ROOT}/miner/")
+            pods.assert_deps(pod)
+
+            local_scores = root / "scores"
+            local_scores.mkdir(parents=True, exist_ok=True)
+            puller = pods.start_puller([pod], str(local_scores))
+            remote_timeout = max(3600, math.ceil(estimated_hours * 3600))
+            for seed in seeds:
+                for name in ("king-control", candidate.name):
+                    checked_remote(pod, [
+                        pods.REMOTE_PY, "-m", "miner.evaluate",
+                        f"{pods.REMOTE_ROOT}/generators/{name}",
+                        "--chain-toml", "/root/cascade/chain.toml",
+                        "--pools-root", f"{pods.REMOTE_ROOT}/pools/snapshots",
+                        "--scores-root", f"{pods.REMOTE_ROOT}/scores",
+                        "--ckpt-root", f"{pods.REMOTE_ROOT}/ckpts",
+                        "--seed", str(seed), "--train-hours", str(train_hours),
+                    ], timeout=remote_timeout)
+            pod.pull(f"{pods.REMOTE_ROOT}/scores/", str(local_scores))
+        finally:
+            if puller is not None:
+                puller.terminate()
+                try:
+                    puller.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    puller.kill()
+                    puller.wait(timeout=10)
+            if pod is not None:
+                try:
+                    pod.pull(f"{pods.REMOTE_ROOT}/scores/", str(root / "scores"))
+                finally:
+                    pods.stop(pod.name)
+            elif rented:
+                # Rental may succeed before pod discovery. Stop by its unique name.
+                pods.stop(pod_name)
+    return 0
+
+
+def main() -> int:
+    try:
+        event = json.loads(os.environ.get("CASCADE_MINER_EVENT", "{}"))
+        return run(event)
+    except Exception as exc:  # noqa: BLE001 - command boundary must exit nonzero
+        print(f"gpu evaluation failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

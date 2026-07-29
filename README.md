@@ -158,9 +158,25 @@ timelocked pointer.
 
 `miner/pods.py` is an explicit operator library; nothing imports or runs it
 automatically. The controller deliberately never rents GPUs. An operator must
-call the library from a reviewed evaluation command or configure that command
-for the improvement hook's `gpu_evaluation` action. Human mode still requires
-approval, and autonomous mode still requires the action to be allowlisted.
+authorize `scripts/run-gpu-evaluation` as the improvement hook's
+`gpu_evaluation` action. Human mode still requires approval, and autonomous
+mode still requires the action to be allowlisted.
+
+### Money-spending boundary
+
+The commands configured for privileged actions are the deliberate boundary
+between agent edits and real-world effects. `scripts/run-gpu-evaluation` is the
+shipped, non-interactive GPU implementation: after approval it rents exactly
+one Lium GPU, fetches the receipt-pinned king, trains king and candidate on the
+same seeds, continuously pulls scores, and terminates the pod even on failure.
+It reads `candidate_path` and `estimated_hours` from the approval context.
+
+The three `ops/` commands ship only as refusing stubs. Operators must replace
+them with reviewed wrappers appropriate to their protected wallet setup before
+enabling `create_hotkey`, `register_hotkey`, or `submit_candidate`. This is
+intentional: the repository does not guess how wallet secrets are unlocked.
+The supplied `example.env` points `CASCADE_APPROVED_EVAL_COMMAND` at the GPU
+script; copying it does not bypass either controller mode's gate.
 
 `miner.controller` continuously fast-forwards the read-only Cascade reference
 checkout, records changes to `chain.toml`, mirrors the
@@ -212,6 +228,7 @@ set -a; source .env; set +a
   --hook-timeout 7200 \
   --max-improvements-per-round 1 \
   --sync-command "uv pip install --python .venv/bin/python --reinstall /root/cascade" \
+  --approved-eval-command ".venv/bin/python scripts/run-gpu-evaluation" \
   --improve-command ".venv/bin/python scripts/improve_candidate.py"
 ```
 
@@ -229,6 +246,11 @@ For bounded autonomous evaluation:
   --autonomous-actions "gpu_evaluation" \
   --improve-command ".venv/bin/python scripts/improve_candidate.py"
 ```
+
+The example paths above now all exist. The GPU command is operational and
+spends money only after the configured approval/allowlist gate. The `ops/`
+paths refuse with exit status 2 until an operator deliberately implements
+them; do not allowlist those wallet actions while they remain stubs.
 
 The hook receives `CASCADE_MINER_EVENT`, `CASCADE_MINER_EVENT_TYPE`,
 `CASCADE_MINER_ROUND_ID`, `CASCADE_MINER_STATE`, and `CASCADE_CHAIN_TOML` in its
