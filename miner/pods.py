@@ -24,18 +24,20 @@ The results puller is deliberately NOT optional; see :func:`start_puller`.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
     "-o", "ConnectTimeout=30",
-    "-i", "/root/.ssh/id_ed25519",
+    "-i", str(Path.home() / ".ssh/id_ed25519"),
 ]
 REMOTE_ROOT = "/root/cascade-miner"   # absolute, always
 REMOTE_PY = f"{REMOTE_ROOT}/.venv/bin/python"
@@ -57,20 +59,20 @@ class Pod:
         )
 
     def push(self, local: str, remote: str, timeout: int = 900) -> None:
-        subprocess.run(
-            ["rsync", "-az", "--exclude", "__pycache__", "-e",
-             f"ssh {' '.join(shlex.quote(o) for o in SSH_OPTS)} -p {self.port}",
-             local, f"root@{self.ip}:{remote}"],
-            check=True, timeout=timeout,
-        )
+        ssh_opts = ' '.join(shlex.quote(o) for o in SSH_OPTS)
+        local_clean = local.rstrip('/')
+        remote_clean = remote.rstrip('/')
+        cmd = (f"tar -cf - --exclude=__pycache__ -C {shlex.quote(local_clean)} . | "
+               f"ssh {ssh_opts} -p {self.port} root@{self.ip} "
+               f"'mkdir -p {remote_clean} && tar -xf - -C {remote_clean}'")
+        subprocess.run(["bash", "-c", cmd], check=True, timeout=timeout)
 
     def pull(self, remote: str, local: str, timeout: int = 900) -> None:
-        subprocess.run(
-            ["rsync", "-az", "-e",
-             f"ssh {' '.join(shlex.quote(o) for o in SSH_OPTS)} -p {self.port}",
-             f"root@{self.ip}:{remote}", local],
-            timeout=timeout, check=False,      # partial pulls are fine
-        )
+        ssh_opts = ' '.join(shlex.quote(o) for o in SSH_OPTS)
+        os.makedirs(local, exist_ok=True)
+        cmd = (f"ssh {ssh_opts} -p {self.port} root@{self.ip} "
+               f"'tar -cf - -C {remote} .' | tar -xf - -C {shlex.quote(local)}")
+        subprocess.run(["bash", "-c", cmd], timeout=timeout, check=False)
 
 
 def _lium(*args: str, timeout: int = 900) -> subprocess.CompletedProcess:
@@ -180,7 +182,12 @@ def check_ttl_covers(pod: Pod, needed_hours: float) -> None:
     from datetime import datetime, timezone
     if not pod.ttl_iso:
         return
-    ttl = datetime.fromisoformat(pod.ttl_iso.replace("Z", "+00:00"))
+    ttl_str = pod.ttl_iso.replace("Z", "+00:00")
+    if "+" not in ttl_str and "T" in ttl_str:
+        ttl_str = ttl_str + "+00:00"
+    ttl = datetime.fromisoformat(ttl_str)
+    if ttl.tzinfo is None:
+        ttl = ttl.replace(tzinfo=timezone.utc)
     left = (ttl - datetime.now(timezone.utc)).total_seconds() / 3600
     if left < needed_hours:
         raise RuntimeError(
@@ -196,10 +203,11 @@ def start_puller(pods: list[Pod], local_scores: str, every_s: int = 600) -> subp
     """
     lines = ["#!/bin/bash", "while true; do"]
     for p in pods:
-        opts = " ".join(shlex.quote(o) for o in SSH_OPTS)
+        opts = ' '.join(shlex.quote(o) for o in SSH_OPTS)
         lines.append(
-            f'  timeout 600 rsync -az -e "ssh {opts} -p {p.port}" '
-            f'root@{p.ip}:{REMOTE_ROOT}/scores/ {shlex.quote(local_scores)}/ 2>/dev/null'
+            f'  timeout 600 ssh {opts} -p {p.port} root@{p.ip} '
+            f"'mkdir -p {REMOTE_ROOT}/scores && tar -cf - -C {REMOTE_ROOT}/scores/ .' 2>/dev/null | "
+            f'tar -xf - -C {shlex.quote(local_scores)}/ 2>/dev/null || true'
         )
     lines += [f'  sleep {every_s}', "done"]
     path = "/tmp/cascade_miner_puller.sh"
