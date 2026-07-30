@@ -157,6 +157,18 @@ class GpuEvaluationTests(TestCase):
     def test_example_env_wires_the_shipped_approved_command(self):
         env = (ROOT / "example.env").read_text()
         self.assertIn(
-            "CASCADE_APPROVED_EVAL_COMMAND=.venv/bin/python scripts/run-gpu-evaluation",
+            'CASCADE_APPROVED_EVAL_COMMAND=".venv/bin/python scripts/run-gpu-evaluation"',
             env,
         )
+
+    def test_example_env_quotes_every_value_containing_a_space(self):
+        """`set -a; source .env` executes the second word of an unquoted value."""
+        for line in (ROOT / "example.env").read_text().splitlines():
+            if line.startswith("#") or "=" not in line:
+                continue
+            value = line.split("=", 1)[1]
+            if " " in value:
+                self.assertTrue(
+                    value.startswith(('"', "'")) and value.endswith(('"', "'")),
+                    f"unquoted value with a space would be executed on source: {line}",
+                )
