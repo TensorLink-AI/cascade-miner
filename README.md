@@ -59,7 +59,10 @@ the wallet named by `--wallet-name` exists, and `--with-wallet` delegates to
 your own `CASCADE_CREATE_HOTKEY_COMMAND` (default `ops/create-next-hotkey`,
 which refuses until you implement it). Registration stays manual: it burns TAO.
 
-The rest of this section is the same work done by hand.
+For the step-by-step version — non-root and container environments, agent
+backends, and what each step actually does — see
+**[docs/SETUP.md](docs/SETUP.md)**. The rest of this section is the quick
+version by hand, and assumes root access on a full machine.
 
 You need a Bittensor coldkey and hotkey before submitting. Create them with
 `btcli` if they do not already exist:

@@ -3,6 +3,25 @@
 This guide covers getting cascade-miner running on a fresh machine or container.
 It works for both human operators and AI agents.
 
+## The short version
+
+`scripts/setup.sh` performs steps 2, 4, 5, 7, 8, and 9 below — everything that
+neither spends money nor touches wallet secrets — and ends with a summary of
+what is ready and what still needs you:
+
+```bash
+bash scripts/setup.sh --cascade-dir /path/to/cascade
+bash scripts/setup.sh --cascade-dir /path/to/cascade --dry-run   # print the plan
+```
+
+Every step is idempotent, so re-running it is safe: an existing venv, SSH key,
+or eval-pool snapshot is left alone. Use `--skip-venv`, `--skip-lium`,
+`--skip-ssh-key`, `--skip-pool`, `--skip-seed`, or `--skip-verify` to drop
+individual steps, and `--eval-pool-snapshot` to choose what to mirror.
+
+It deliberately does **not** create wallets (step 6) or register (also step 6).
+Read on for those, and for what each automated step is doing.
+
 ## Prerequisites
 
 - Python 3.11+ and [uv](https://github.com/astral-sh/uv) (Python package manager)
@@ -31,6 +50,8 @@ uv pip install --python .venv/bin/python '/path/to/cascade[hippius,chain]'
 The `train` extra (torch) is only needed on GPU pods — skip it locally if you
 don't have a GPU or are disk-constrained. The `hippius` and `chain` extras are
 needed for the controller, eval pool sync, and deployment.
+`scripts/setup.sh` installs `train,hippius,chain`; pass
+`--extras hippius,chain` to leave torch out.
 
 Verify the install:
 
@@ -60,6 +81,7 @@ Optional but recommended:
 |-----|---------|-------------|
 | `CASCADE_MODE` | `human` | `human` = approve GPU spend; `autonomous` = auto-allowlisted actions |
 | `CASCADE_AGENT` | `auto` | Which agent CLI to use for improvement passes (`hermes`, `claude`, `codex`, `custom`) |
+| `CASCADE_EVAL_POOL_SNAPSHOT` | `latest` | Which eval-pool snapshot to mirror (`latest`, `all`, or a dated name) |
 | `CASCADE_EVAL_SEEDS` | `0,1,2` | Seeds for paired evaluation |
 | `CASCADE_TRAIN_HOURS` | `1` | Training budget per run (heat budget) |
 | `CASCADE_GPU` | `RTX4090` | GPU type to rent from Lium |
@@ -103,14 +125,22 @@ Create the wallet programmatically:
 .venv/bin/python -c "
 import bittensor
 w = bittensor.Wallet(name='cascade-miner', path='wallets')
-w.create_new_coldkey(n_words=12, use_password=False, overwrite=True, suppress=False)
-w.create_new_hotkey(n_words=12, use_password=False, overwrite=True, suppress=False)
+w.create_new_coldkey(n_words=12, use_password=False, overwrite=False, suppress=False)
+w.create_new_hotkey(n_words=12, use_password=False, overwrite=False, suppress=False)
 print(f'Coldkey: {w.coldkeypub.ss58_address}')
 print(f'Hotkey:  {w.hotkeypub.ss58_address}')
 "
 ```
 
-**Save the mnemonics.** They are the only way to recover the keys.
+**Save the mnemonics.** They are the only way to recover the keys. Keep
+`overwrite=False`: with `overwrite=True` this silently replaces an existing
+coldkey, and the funds under the old one are unrecoverable without its mnemonic.
+Keep the wallet directory outside this repository.
+
+This is the one step `scripts/setup.sh` will not do for you. It reports whether
+the wallet named by `--wallet-name` exists, and `--with-wallet` delegates to
+your own `CASCADE_CREATE_HOTKEY_COMMAND` (default `ops/create-next-hotkey`, a
+refusing stub). Harness code never handles wallet secrets.
 
 The hotkey must be registered on netuid 91 (mainnet/finney) before submitting.
 Registration costs ~1126 τ and burns the registration fee. This step requires
@@ -121,51 +151,47 @@ For testnet (netuid 259), registration is free.
 
 ## Step 7: Download the eval pool (latest snapshot only)
 
-The eval pool has 10k+ files across multiple dated snapshots. Download only
-the latest — older snapshots are stale and the eval pool rotates every round.
+The eval pool is 10k+ files across 13 dated snapshots. The controller mirrors
+only the newest one by default, which is a few minutes rather than 20+ and well
+clear of the Hub's rate limits:
 
 ```bash
-.venv/bin/python -c "
-from huggingface_hub import HfApi, snapshot_download
-import os
-
-api = HfApi(token=os.environ.get('HF_TOKEN'))
-info = api.dataset_info(repo_id='Tensor-Link/cascade-eval-pool')
-snaps = sorted(set(f.rfilename.split('/')[1] for f in info.siblings
-                   if f.rfilename.startswith('snapshots/')))
-latest = snaps[-1]
-print(f'Downloading snapshot: {latest}')
-snapshot_download(
-    repo_id='Tensor-Link/cascade-eval-pool', repo_type='dataset',
-    local_dir='pools', token=os.environ.get('HF_TOKEN'),
-    allow_patterns=[f'snapshots/{latest}/*', '*.json', '*.md'],
-    max_workers=4
-)
-print('Done')
-"
+.venv/bin/python -m miner.controller --sync-pool
 ```
+
+This checks the dataset revision first — one fast API call — prints the
+snapshot, file count, and approximate size before downloading anything, records
+the revision in `runs/controller-state.json`, and retries once if the Hub fails
+mid-transfer. Re-running it downloads nothing when the revision is unchanged.
+
+`--eval-pool-snapshot` chooses what to mirror:
+
+| Selector | Effect |
+|----------|--------|
+| `latest` (default) | just the newest dated snapshot |
+| `all` | the whole dataset — 10k+ files, 20+ min, 429-prone |
+| `2026-07-16` | exactly that snapshot; an unknown name lists the real ones |
+
+Snapshots already under `pools/snapshots/` are never deleted, so a narrower
+selector shrinks what is *downloaded*, not what you can train against. Keep the
+selector fixed across the arms of one experiment: a king and challenger scored
+over different snapshot sets are not paired.
 
 ## Step 8: Seed the controller state
 
-The controller's first run would otherwise try to re-download the entire eval
-pool. Seed the state file to skip that:
+Run one poll. It records the Cascade head, `chain.toml`, the eval-pool
+revision, and the latest round receipt — and deliberately invokes no
+improvement hook on a first run:
 
 ```bash
-.venv/bin/python -c "
-import json, os
-from huggingface_hub import HfApi
-api = HfApi(token=os.environ.get('HF_TOKEN'))
-info = api.dataset_info(repo_id='Tensor-Link/cascade-eval-pool')
-os.makedirs('runs', exist_ok=True)
-json.dump({
-    'initialized': True,
-    'eval_pool_revision': info.sha,
-    'last_round_id': '',
-    'last_receipt': {},
-}, open('runs/controller-state.json', 'w'), indent=2)
-print(f'Seeded state with revision {info.sha[:12]}')
-"
+.venv/bin/python -m miner.controller --once --cascade-dir /path/to/cascade
 ```
+
+Do not hand-write `runs/controller-state.json`. Writing `initialized: true`
+with an empty `last_receipt` makes the controller treat the next poll as a
+resumption and start firing improvement hooks, while `scripts/run-gpu-evaluation`
+has no `king_gen_ref` to fetch a control from. Each detection is persisted as
+soon as it is made, so an interrupted poll never re-downloads the pool.
 
 ## Step 9: Verify the starter generator
 
@@ -181,20 +207,26 @@ digests). If this passes, your environment is ready.
 generators (20+ families, 4096 length, 16384 series). Reduce `batch_size` in
 `config.json` or use a lighter generator for the check.
 
-## Step 10: Run the controller once to verify
+## Step 10: Start the loop
+
+With state seeded in step 8, the second poll is the first one that can invoke
+an improvement hook:
 
 ```bash
 set -a; source .env; set +a
 export PATH="$HOME/.lium/bin:$PATH"
-.venv/bin/python -m miner.controller --once \
+.venv/bin/python -m miner.controller \
   --cascade-dir /path/to/cascade \
   --chain-toml /path/to/cascade/chain.toml \
-  --improve-command "" --approved-eval-command ""
+  --interval 300 --hotkey "<your-ss58-hotkey>" \
+  --improve-command ".venv/bin/python scripts/improve_candidate.py" \
+  --approved-eval-command ".venv/bin/python scripts/run-gpu-evaluation"
 ```
 
-This should fetch the latest round receipt, read the chain config, and write
-state to `runs/controller-state.json`. If it hangs, it's likely trying to
-download the full eval pool — make sure step 8 completed.
+Pass empty `--improve-command ""` and `--approved-eval-command ""` to watch
+without acting. Nothing here spends money: in `human` mode (the default) GPU
+evaluation waits for `--approve`, and submission is never automatic. See the
+README's *Continuous controller* section for both modes.
 
 ## Non-root / container environments
 

@@ -56,6 +56,9 @@ Options:
                           (default: $CASCADE_DIR or /root/cascade)
   --venv PATH             project venv to create (default: <repo>/.venv)
   --python VERSION        Python version for the venv (default: 3.11)
+  --extras LIST           Cascade extras to install
+                          (default: train,hippius,chain; torch is only needed
+                          on GPU pods, so --extras hippius,chain saves disk)
   --eval-pool-snapshot S  latest (default), all, or a dated snapshot name
   --wallet-name NAME      wallet to look for in step 4
   --wallet-hotkey NAME    hotkey to look for in step 4 (default: default)
@@ -76,6 +79,7 @@ while [ $# -gt 0 ]; do
         --cascade-dir) CASCADE_DIR="${2:?--cascade-dir needs a path}"; shift 2 ;;
         --venv) VENV="${2:?--venv needs a path}"; shift 2 ;;
         --python) PYTHON_VERSION="${2:?--python needs a version}"; shift 2 ;;
+        --extras) EXTRAS="${2:?--extras needs a comma-separated list}"; shift 2 ;;
         --eval-pool-snapshot) POOL_SNAPSHOT="${2:?--eval-pool-snapshot needs a value}"; shift 2 ;;
         --wallet-name) WALLET_NAME="${2:?--wallet-name needs a name}"; shift 2 ;;
         --wallet-hotkey) WALLET_HOTKEY="${2:?--wallet-hotkey needs a name}"; shift 2 ;;

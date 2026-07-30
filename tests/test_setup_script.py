@@ -103,6 +103,39 @@ class SetupScriptTests(TestCase):
         self.assertIn("refused or failed", result.stdout)
         self.assertIn("registration burns TAO", result.stdout)
 
+    def test_extras_are_configurable_for_disk_constrained_hosts(self):
+        with TemporaryDirectory() as home:
+            result = self.run_setup(
+                "--dry-run", "--extras", "hippius,chain",
+                "--cascade-dir", f"{home}/cascade", home=home,
+            )
+        self.assertIn("[hippius,chain]", result.stdout)
+        self.assertNotIn("train,hippius,chain", result.stdout)
+
     def test_readme_documents_the_setup_entry_point(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("bash scripts/setup.sh --cascade-dir", readme)
+        self.assertIn("docs/SETUP.md", readme)
+
+
+class SetupGuideTests(TestCase):
+    """docs/SETUP.md must drive the shipped tooling, not re-implement it."""
+
+    GUIDE = (ROOT / "docs/SETUP.md").read_text(encoding="utf-8")
+
+    def test_guide_uses_the_controller_for_pool_sync_and_seeding(self):
+        self.assertIn("miner.controller --sync-pool", self.GUIDE)
+        self.assertIn("miner.controller --once", self.GUIDE)
+        self.assertIn("--eval-pool-snapshot", self.GUIDE)
+        self.assertIn("bash scripts/setup.sh --cascade-dir", self.GUIDE)
+
+    def test_guide_does_not_hand_write_controller_state(self):
+        """A hand-seeded state file fires hooks with no king_gen_ref to fetch."""
+        for stale in ("'initialized': True", '"initialized": true',
+                      "'last_receipt': {}", "snapshot_download("):
+            self.assertNotIn(stale, self.GUIDE)
+
+    def test_guide_never_recommends_overwriting_an_existing_coldkey(self):
+        """`overwrite=True` destroys an existing coldkey and its funds."""
+        self.assertNotIn("use_password=False, overwrite=True", self.GUIDE)
+        self.assertIn("use_password=False, overwrite=False", self.GUIDE)
