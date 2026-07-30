@@ -40,10 +40,26 @@ A submission is exactly three files — `generator.py`, `config.json`,
 
 ## Setup
 
-For a complete, step-by-step guide covering non-root environments, container
-setups, and agent backends, see **[docs/SETUP.md](docs/SETUP.md)**.
+One command does everything that does not spend money or touch wallet secrets —
+venv, Cascade install, Lium CLI, SSH key, latest eval-pool snapshot, controller
+state, `cascade verify` — and prints what is ready and what still needs you:
 
-The quick version (assumes root access on a full machine):
+```bash
+bash scripts/setup.sh --cascade-dir /path/to/cascade
+bash scripts/setup.sh --cascade-dir /path/to/cascade --dry-run   # print the plan
+```
+
+Every step is idempotent: an existing venv, SSH key, or eval-pool snapshot is
+left alone. `--skip-venv`, `--skip-lium`, `--skip-ssh-key`, `--skip-pool`,
+`--skip-seed`, and `--skip-verify` drop individual steps, and
+`--eval-pool-snapshot` selects what to mirror (see *Continuous controller*).
+
+Wallet creation is deliberately **not** done by the script. It reports whether
+the wallet named by `--wallet-name` exists, and `--with-wallet` delegates to
+your own `CASCADE_CREATE_HOTKEY_COMMAND` (default `ops/create-next-hotkey`,
+which refuses until you implement it). Registration stays manual: it burns TAO.
+
+The rest of this section is the same work done by hand.
 
 You need a Bittensor coldkey and hotkey before submitting. Create them with
 `btcli` if they do not already exist:
@@ -94,10 +110,16 @@ For Hippius, this harness only needs `HIPPIUS_HUB_TOKEN` to upload generator
 artefacts for deployment; no Hippius S3 or pool-S3 credentials are required.
 Set `HF_TOKEN` for the controller's evaluation-pool revision checks and downloads;
 authenticated requests avoid the public Hub's low unauthenticated rate limits.
-The first pool sync downloads the full dataset and can be slow or rate-limited
-without `HF_TOKEN`; unchanged later revisions do not download it again. Set
-`LIUM_API_KEY` when renting GPU pods. `.env` is gitignored; never commit real
-tokens, wallet secrets, or mnemonics.
+By default a pool sync fetches only the newest snapshot, and unchanged later
+revisions download nothing at all. Set `LIUM_API_KEY` when renting GPU pods.
+`.env` is gitignored; never commit real tokens, wallet secrets, or mnemonics.
+
+Mirror the eval pool without starting the controller loop:
+
+```bash
+.venv/bin/python -m miner.controller --sync-pool                      # newest snapshot
+.venv/bin/python -m miner.controller --sync-pool --eval-pool-snapshot all
+```
 
 ## The loop
 
@@ -197,8 +219,31 @@ timeout.
 
 Startup verifies that the selected venv interpreter can import both Cascade and
 `huggingface_hub`. The first poll seeds controller state without invoking an
-agent. Later polls check the evaluation-pool revision before downloading; an
-unchanged revision performs no snapshot download. A dirty `/root/cascade`
+agent.
+
+Each poll checks the dataset revision — one fast API call — before downloading
+anything, and mirrors only the snapshot named by `--eval-pool-snapshot`
+(`CASCADE_EVAL_POOL_SNAPSHOT`):
+
+- `latest` (default) fetches just the newest dated snapshot. Mirroring all 13
+  is 10k+ files, takes 20+ minutes, and invites Hub rate limiting (429).
+- `all` mirrors the whole dataset.
+- A dated name such as `2026-07-16` mirrors exactly that snapshot. An unknown
+  name fails with the list of snapshots the dataset actually publishes.
+
+Snapshots already under `pools/snapshots/` are never deleted, so a narrower
+selector shrinks what is *downloaded*, not what you can train against. The
+controller announces the snapshot, file count, and approximate size before a
+download starts, and retries once if the Hub fails mid-transfer. An unchanged
+revision downloads nothing; a first run against an already-populated pool
+records the revision instead of re-fetching files that are on disk. Each
+detection — Cascade head, pool revision, round receipt — is written to the state
+file as soon as it is made, so a failure later in the poll cannot cost a second
+20-minute download.
+
+Because a narrower selector changes which snapshots `miner.evaluate` scores,
+keep it fixed across the arms of one experiment: a king and challenger scored
+over different snapshot sets are not paired. A dirty `/root/cascade`
 checkout produces one actionable `cascade_dirty` event and exits nonzero rather
 than repeating a merge failure. Revert local changes there; never commit them.
 

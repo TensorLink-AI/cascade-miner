@@ -13,9 +13,11 @@ from miner.controller import (
     Controller,
     absolute_path,
     assert_runtime,
+    local_snapshots,
     queue_approval,
     read_json,
     refresh_cascade,
+    resolve_snapshot,
     set_approval_status,
     sync_eval_pool,
 )
@@ -68,68 +70,180 @@ class RuntimeTests(TestCase):
 
 
 class PoolSyncTests(TestCase):
+    """The eval pool is 10k+ files, so every download decision is a cost."""
+
+    SNAPSHOTS = ("2026-06-16", "2026-07-01", "2026-07-16")
+
     def _fake_hub(self, root: Path, *, noisy: bool = False) -> Path:
         package = root / "huggingface_hub"
         package.mkdir()
         noise = "sys.stderr.write('x' * 600000 + 'REAL_ERROR_TAIL\\n')" if noisy else ""
         package.joinpath("__init__.py").write_text(
             "import json, os, pathlib, sys\n"
-            "class Info:\n    sha = 'revision-2'\n"
+            f"SNAPSHOTS = {list(self.SNAPSHOTS)!r}\n"
+            "class Sibling:\n"
+            "    def __init__(self, rfilename, size):\n"
+            "        self.rfilename, self.size = rfilename, size\n"
+            "class Info:\n"
+            "    sha = 'revision-2'\n"
+            "    siblings = ([Sibling('README.md', 10)]\n"
+            "        + [Sibling(f'snapshots/{name}/windows.npy', 2_000_000)\n"
+            "           for name in SNAPSHOTS]\n"
+            "        + [Sibling(f'snapshots/{name}/meta.json', 20)\n"
+            "           for name in SNAPSHOTS])\n"
             "class HfApi:\n"
             "    def __init__(self, token=None):\n"
             "        if token != 'hf_test': raise RuntimeError('missing token')\n"
-            "    def dataset_info(self, repo_id):\n"
+            "    def dataset_info(self, repo_id, files_metadata=False):\n"
             "        assert os.environ.get('HF_HUB_DISABLE_PROGRESS_BARS') == '1'\n"
+            "        assert files_metadata, 'sizes are needed for the progress line'\n"
             f"        {noise}\n"
             + ("        raise RuntimeError('boom')\n" if noisy else "        return Info()\n")
             + "def snapshot_download(**kwargs):\n"
-              "    pathlib.Path(kwargs['local_dir']).mkdir(parents=True, exist_ok=True)\n"
-              "    pathlib.Path(kwargs['local_dir'], 'downloaded').write_text(kwargs['revision'])\n"
+              "    dest = pathlib.Path(kwargs['local_dir'])\n"
+              "    patterns = kwargs.get('allow_patterns')\n"
+              "    dest.mkdir(parents=True, exist_ok=True)\n"
+              "    dest.joinpath('downloaded').write_text(json.dumps(\n"
+              "        {'revision': kwargs['revision'], 'allow_patterns': patterns}))\n"
+              "    for name in SNAPSHOTS:\n"
+              "        if patterns and not any(\n"
+              "                p.startswith(f'snapshots/{name}/') for p in patterns):\n"
+              "            continue\n"
+              "        directory = dest / 'snapshots' / name\n"
+              "        directory.mkdir(parents=True, exist_ok=True)\n"
+              "        directory.joinpath('windows.npy').write_text('x')\n"
+              "    return str(dest)\n"
         )
         return root
 
+    def _sync(self, root: Path, dest: Path, known: str = "", **kwargs):
+        messages: list[str] = []
+        with patch.dict(os.environ, {
+            "PYTHONPATH": str(root), "HF_TOKEN": "hf_test",
+        }, clear=False):
+            result = sync_eval_pool(
+                Path(sys.executable), root, "owner/pool", dest, known,
+                log=messages.append, **kwargs,
+            )
+        return result, messages
+
+    def _seed_local(self, dest: Path, *names: str) -> None:
+        for name in names:
+            directory = dest / "snapshots" / name
+            directory.mkdir(parents=True)
+            directory.joinpath("windows.npy").write_text("x")
+
+    def _download_call(self, dest: Path) -> dict:
+        return json.loads((dest / "downloaded").read_text())
+
+    def test_default_selector_downloads_only_the_latest_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            dest = root / "pool"
+            result, messages = self._sync(root, dest, "revision-1")
+            self.assertTrue(result["downloaded"])
+            self.assertEqual(result["snapshot"], "2026-07-16")
+            self.assertEqual(result["available_snapshots"], list(self.SNAPSHOTS))
+            self.assertEqual(
+                self._download_call(dest)["allow_patterns"],
+                ["snapshots/2026-07-16/*", "*.json", "*.md"],
+            )
+            self.assertEqual(local_snapshots(dest), ["2026-07-16"])
+            self.assertTrue(
+                any("downloading snapshot 2026-07-16" in line and "files" in line
+                    for line in messages),
+                messages,
+            )
+
+    def test_explicit_snapshot_is_fetched_and_unknown_names_list_options(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            dest = root / "pool"
+            result, _ = self._sync(root, dest, snapshot="2026-07-01")
+            self.assertEqual(result["snapshot"], "2026-07-01")
+            self.assertEqual(local_snapshots(dest), ["2026-07-01"])
+            with self.assertRaisesRegex(RuntimeError, "2026-06-16, 2026-07-01"):
+                self._sync(root, root / "other", snapshot="2026-12-31")
+
+    def test_all_selector_mirrors_every_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            dest = root / "pool"
+            result, _ = self._sync(root, dest, snapshot="all")
+            self.assertEqual(result["snapshot"], "all")
+            self.assertIsNone(self._download_call(dest)["allow_patterns"])
+            self.assertEqual(local_snapshots(dest), list(self.SNAPSHOTS))
+
     def test_unchanged_revision_skips_snapshot_download_and_uses_token(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake = self._fake_hub(root)
+            root = self._fake_hub(Path(directory))
             dest = root / "pool"
-            with patch.dict(os.environ, {
-                "PYTHONPATH": str(fake), "HF_TOKEN": "hf_test",
-            }, clear=False):
-                result = sync_eval_pool(
-                    Path(sys.executable), root, "owner/pool", dest, "revision-2"
-                )
+            self._seed_local(dest, "2026-07-16")
+            result, _ = self._sync(root, dest, "revision-2")
             self.assertFalse(result["downloaded"])
+            self.assertEqual(result["reason"], "revision unchanged")
             self.assertFalse((dest / "downloaded").exists())
 
-    def test_changed_revision_downloads_once(self):
+    def test_first_run_with_a_populated_pool_skips_the_download(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake = self._fake_hub(root)
+            root = self._fake_hub(Path(directory))
             dest = root / "pool"
-            with patch.dict(os.environ, {
-                "PYTHONPATH": str(fake), "HF_TOKEN": "hf_test",
-            }, clear=False):
-                result = sync_eval_pool(
-                    Path(sys.executable), root, "owner/pool", dest, "revision-1"
-                )
+            self._seed_local(dest, "2026-07-16")
+            result, _ = self._sync(root, dest, "")
+            self.assertFalse(result["downloaded"])
+            self.assertIn("already present", result["reason"])
+            self.assertEqual(result["revision"], "revision-2")
+
+    def test_a_partial_mirror_is_not_treated_as_a_complete_one(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            dest = root / "pool"
+            self._seed_local(dest, "2026-07-16")
+            result, _ = self._sync(root, dest, "", snapshot="all")
             self.assertTrue(result["downloaded"])
-            self.assertEqual((dest / "downloaded").read_text(), "revision-2")
+            self.assertEqual(local_snapshots(dest), list(self.SNAPSHOTS))
+
+    def test_missing_snapshot_downloads_even_when_the_revision_matches(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            dest = root / "pool"
+            self._seed_local(dest, "2026-06-16")
+            result, _ = self._sync(root, dest, "revision-2")
+            self.assertTrue(result["downloaded"])
+            self.assertEqual(local_snapshots(dest), ["2026-06-16", "2026-07-16"])
+
+    def test_download_failure_is_retried_before_giving_up(self):
+        with TemporaryDirectory() as directory:
+            root = self._fake_hub(Path(directory))
+            calls: list[int] = []
+            real = controller.pool_child
+
+            def flaky(python, cwd, script, args, timeout):
+                if script is controller.POOL_DOWNLOAD_SCRIPT:
+                    calls.append(1)
+                    if len(calls) == 1:
+                        raise RuntimeError("eval-pool sync failed: 429 rate limited")
+                return real(python, cwd, script, args, timeout)
+
+            with patch.object(controller, "pool_child", side_effect=flaky), \
+                    patch.object(controller.time, "sleep"):
+                result, messages = self._sync(root, root / "pool", "revision-1")
+            self.assertTrue(result["downloaded"])
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(any("retrying" in line for line in messages), messages)
 
     def test_pool_error_is_quiet_and_truncated(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake = self._fake_hub(root, noisy=True)
-            with patch.dict(os.environ, {
-                "PYTHONPATH": str(fake), "HF_TOKEN": "hf_test",
-            }, clear=False):
-                with self.assertRaises(RuntimeError) as caught:
-                    sync_eval_pool(
-                        Path(sys.executable), root, "owner/pool", root / "pool", ""
-                    )
+            root = self._fake_hub(Path(directory), noisy=True)
+            with self.assertRaises(RuntimeError) as caught:
+                self._sync(root, root / "pool", "")
             message = str(caught.exception)
             self.assertIn("REAL_ERROR_TAIL", message)
             self.assertLess(len(message), 2100)
+
+    def test_latest_falls_back_to_everything_when_nothing_is_dated(self):
+        self.assertEqual(resolve_snapshot("latest", []), "all")
+        self.assertEqual(resolve_snapshot("", ["2026-07-16"]), "2026-07-16")
 
 
 class ApprovalTests(TestCase):
@@ -172,18 +286,23 @@ class ApprovalTests(TestCase):
 
 
 class CycleTests(TestCase):
-    def _cycle_patches(self, *, round_id: str = "round-1"):
+    POOL = {
+        "repo_id": "owner/pool", "revision": "pool-1", "downloaded": False,
+        "snapshot": "2026-07-16", "reason": "revision unchanged",
+        "available_snapshots": ["2026-07-16"], "local_snapshots": ["2026-07-16"],
+    }
+
+    def _cycle_patches(self, *, round_id: str = "round-1", audit=None):
         return (
             patch.object(controller, "refresh_cascade",
                          return_value=("head-1", "head-1")),
             patch.object(controller, "chain_snapshot",
                          return_value={"digest": "chain-1", "values": {}}),
-            patch.object(controller, "sync_eval_pool", return_value={
-                "repo_id": "owner/pool", "revision": "pool-1", "downloaded": False,
-            }),
-            patch.object(controller, "audit_latest", return_value={
-                "round_id": round_id, "status": "scored", "ok": True,
-            }),
+            patch.object(controller, "sync_eval_pool", return_value=dict(self.POOL)),
+            patch.object(controller, "audit_latest", **(
+                {"side_effect": audit} if audit is not None else
+                {"return_value": {"round_id": round_id, "status": "scored", "ok": True}}
+            )),
         )
 
     def test_first_cycle_seeds_state_without_hook(self):
@@ -226,6 +345,31 @@ class CycleTests(TestCase):
                     instance.cycle()
             self.assertEqual(read_json(instance.state_file)["last_round_id"], "round-2")
 
+    def test_pool_revision_survives_a_later_failure_in_the_same_cycle(self):
+        """A failed audit must not cost another full pool download next poll."""
+        with TemporaryDirectory() as directory:
+            instance = make_controller(Path(directory))
+            patches = self._cycle_patches(audit=RuntimeError("chain unreachable"))
+            with patches[0], patches[1], patches[2], patches[3]:
+                with self.assertRaisesRegex(RuntimeError, "chain unreachable"):
+                    instance.cycle()
+            state = read_json(instance.state_file)
+            self.assertEqual(state["eval_pool_revision"], "pool-1")
+            self.assertEqual(state["eval_pool_snapshot"], "2026-07-16")
+            self.assertNotIn("initialized", state)
+            self.assertIn("eval_pool_update", instance.events_file.read_text())
+
+    def test_pool_selector_reaches_the_sync_and_reuses_the_known_revision(self):
+        with TemporaryDirectory() as directory:
+            instance = make_controller(Path(directory), eval_pool_snapshot="all")
+            instance.state_file.parent.mkdir(parents=True)
+            instance.state_file.write_text(json.dumps({"eval_pool_revision": "pool-0"}))
+            patches = self._cycle_patches()
+            with patches[0], patches[1], patches[2] as sync, patches[3]:
+                instance.cycle()
+            self.assertEqual(sync.call_args.args[4], "pool-0")
+            self.assertEqual(sync.call_args.kwargs["snapshot"], "all")
+
     def test_autonomous_mode_invokes_hook_at_most_once_per_cycle(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -249,6 +393,38 @@ class CycleTests(TestCase):
                     patch.object(controller, "run_hook", return_value=hook_result) as hook:
                 instance.cycle()
             self.assertEqual(hook.call_count, 1)
+
+class SyncPoolCommandTests(TestCase):
+    def test_sync_pool_records_the_revision_without_needing_cascade(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pool = {
+                "repo_id": "owner/pool", "revision": "pool-9", "downloaded": True,
+                "snapshot": "2026-07-16", "reason": "downloaded",
+                "available_snapshots": ["2026-07-16"],
+                "local_snapshots": ["2026-07-16"],
+            }
+            with patch.object(controller, "assert_runtime") as runtime, \
+                    patch.object(controller, "sync_eval_pool",
+                                 return_value=pool) as sync:
+                code = controller.main([
+                    "--root", str(root), "--sync-pool",
+                    "--eval-pool-snapshot", "2026-07-16",
+                ])
+            self.assertEqual(code, 0)
+            self.assertEqual(runtime.call_args.kwargs["modules"], ("huggingface_hub",))
+            self.assertEqual(sync.call_args.kwargs["snapshot"], "2026-07-16")
+            state = read_json(root / "runs/controller-state.json")
+            self.assertEqual(state["eval_pool_revision"], "pool-9")
+            self.assertEqual(state["eval_pool_snapshot"], "2026-07-16")
+            # Seeding only the pool must not look like a completed first cycle.
+            self.assertNotIn("initialized", state)
+
+    def test_snapshot_selector_defaults_to_latest(self):
+        args = controller.build_parser().parse_args([])
+        self.assertEqual(args.eval_pool_snapshot, "latest")
+        self.assertFalse(args.sync_pool)
+
 
 class DirtyCascadeTests(TestCase):
     def test_dirty_checkout_blocks_before_any_fetch(self):
