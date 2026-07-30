@@ -40,6 +40,11 @@ A submission is exactly three files — `generator.py`, `config.json`,
 
 ## Setup
 
+For a complete, step-by-step guide covering non-root environments, container
+setups, and agent backends, see **[docs/SETUP.md](docs/SETUP.md)**.
+
+The quick version (assumes root access on a full machine):
+
 You need a Bittensor coldkey and hotkey before submitting. Create them with
 `btcli` if they do not already exist:
 
