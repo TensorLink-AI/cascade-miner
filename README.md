@@ -402,13 +402,22 @@ claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
 ```
 
 The server is stdio JSON-RPC with no extra dependencies. Its tools are reads
-(`miner_status`, `get_state`, `get_latest_receipt`, `list_approvals`,
-`get_policy`, `get_brief`), cheap local checks (`run_quick_verify`), the
-structured experiment ledger (`log_experiment`, `list_experiments`), the
-hermes-native handshake (`get_improve_request`, `respond_improve_request`),
-and `request_action` — which queues a durable approval request and never
-executes anything. The privilege boundary is identical to every other agent
-path: no wallet secrets, no spending, no chain access.
+(`miner_status`, `get_state`, `get_latest_receipt`, `list_heat_entrants`,
+`list_approvals`, `get_policy`, `get_brief`), cheap local checks
+(`run_quick_verify`), free public-artefact fetches (`fetch_generator` — the
+king, a past heat entrant, a dethroned king, into a guarded `generators/`
+directory), the structured experiment ledger (`log_experiment`,
+`list_experiments`), the hermes-native handshake (`get_improve_request`,
+`respond_improve_request`), and `request_action` — which queues a durable
+approval request and never executes anything. The privilege boundary is
+identical to every other agent path: no wallet secrets, no spending, no
+chain writes.
+
+Round receipts are stored with their full participant and heat-entrant
+lists, not just this miner's entry — generators from completed (revealed)
+rounds are public, so past entrants are study material: list them, fetch
+them, diff them against your candidate. The current heat's live rivals stay
+timelocked until reveal; that is the subnet's design.
 
 `python -m miner.status [--json]` prints the same one-look summary for humans
 and scripts: round, king ref, eval pool, candidate digest, pending approvals,

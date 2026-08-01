@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,8 @@ IMPROVE_REQUEST = Path("runs/improve-request.json")
 IMPROVE_RESPONSE = Path("runs/improve-response.json")
 IMPROVE_STATUSES = ("completed", "failed", "rejected", "skipped")
 QUICK_VERIFY_TIMEOUT = 900
+FETCH_TIMEOUT = 600
+GENERATOR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 HARD_LIMITS = (
     "Never rent a pod, register a hotkey, or submit on-chain yourself; use "
@@ -76,9 +80,21 @@ def _candidate_path(root: Path, value: Any) -> Path:
     return path
 
 
+def default_chain_toml(root: Path) -> Path:
+    """Resolve the chain config the same way the rest of the harness does."""
+    named = os.environ.get("CASCADE_CHAIN_TOML", "").strip()
+    if named:
+        return Path(named)
+    cascade_dir = os.environ.get("CASCADE_DIR", "").strip() or "/root/cascade"
+    return Path(cascade_dir) / "chain.toml"
+
+
 class Server:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, chain_toml: Path | None = None,
+                 network: str = "finney"):
         self.root = root
+        self.chain_toml = chain_toml or default_chain_toml(root)
+        self.network = network
         self.tools: list[dict[str, Any]] = []
         self.handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
         self._register_tools()
@@ -116,6 +132,37 @@ class Server:
             no_args,
             lambda args: read_json(
                 self.root / status_module.STATE_FILE).get("last_receipt", {}),
+        )
+        self._tool(
+            "list_heat_entrants",
+            "Every participant and heat entrant from the latest stored round "
+            "receipt — not just this miner's entry. Past rounds' generators "
+            "are public after reveal, so entrants from completed rounds are "
+            "study material for fetch_generator.",
+            no_args, self._list_heat_entrants,
+        )
+        self._tool(
+            "fetch_generator",
+            "Fetch any public generator artefact by reference into "
+            "generators/<out_name> — the king from the latest receipt, a "
+            "past heat entrant, a dethroned king. Free and read-only; only "
+            "artefacts from completed (revealed) rounds are fetchable.",
+            {
+                "properties": {
+                    "ref": {"type": "string",
+                            "description": "Immutable generator reference, "
+                                           "e.g. summary.king_gen_ref."},
+                    "out_name": {"type": "string",
+                                 "description": "Directory name under "
+                                                "generators/. Derived from "
+                                                "the ref when omitted."},
+                    "overwrite": {"type": "boolean",
+                                  "description": "Replace an existing "
+                                                 "non-empty destination."},
+                },
+                "required": ["ref"],
+            },
+            self._fetch_generator,
         )
         self._tool(
             "list_approvals",
@@ -234,6 +281,75 @@ class Server:
         )
 
     # -- tool handlers -----------------------------------------------------
+
+    def _list_heat_entrants(self, args: dict[str, Any]) -> Any:
+        receipt = read_json(self.root / status_module.STATE_FILE).get(
+            "last_receipt", {})
+        if not isinstance(receipt, dict) or not receipt:
+            return {"round_id": None, "entrants": [], "participants": [],
+                    "note": "no receipt stored yet; run the controller once"}
+        heat = receipt.get("heat")
+        entrants = (heat or {}).get("entrants", [])
+        participants = receipt.get("participants", [])
+        payload: dict[str, Any] = {
+            "round_id": receipt.get("round_id"),
+            "king_gen_ref": (receipt.get("summary") or {}).get("king_gen_ref"),
+            "heat": heat,
+            "entrants": entrants,
+            "participants": participants,
+        }
+        if heat is None and not participants:
+            payload["note"] = (
+                "this receipt was stored before entrant lists were kept; "
+                "the next controller poll of a new round records them"
+            )
+        return payload
+
+    def _fetch_generator(self, args: dict[str, Any]) -> Any:
+        ref = str(args.get("ref", "")).strip()
+        if not ref:
+            raise ToolError("a generator reference is required")
+        out_name = str(args.get("out_name", "")).strip()
+        if not out_name:
+            out_name = re.sub(r"[^A-Za-z0-9._-]+", "-",
+                              ref.rstrip("/").rsplit("/", 1)[-1]).strip("-.")
+        if not GENERATOR_NAME.match(out_name):
+            raise ToolError(
+                f"cannot derive a safe directory name from {ref!r}; "
+                "pass out_name matching [A-Za-z0-9][A-Za-z0-9._-]*"
+            )
+        destination = self.root / "generators" / out_name
+        if destination.exists() and any(destination.iterdir()) and not bool(
+                args.get("overwrite")):
+            raise ToolError(
+                f"{destination} already exists and is not empty; "
+                "pass overwrite=true to replace it"
+            )
+        cli = self.root / ".venv/bin/cascade"
+        argv = [str(cli) if cli.exists() else "cascade", "fetch", ref,
+                "--out", str(destination),
+                "--chain-toml", str(self.chain_toml),
+                "--network", self.network]
+        try:
+            result = subprocess.run(
+                argv, cwd=self.root, capture_output=True, text=True,
+                timeout=FETCH_TIMEOUT,
+            )
+        except FileNotFoundError:
+            raise ToolError(
+                "cascade CLI not found; run setup to build the venv"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"fetch timed out after {FETCH_TIMEOUT}s") from None
+        return {
+            "ok": result.returncode == 0,
+            "exit_code": result.returncode,
+            "path": str(destination),
+            "stdout": result.stdout[-4000:],
+            "stderr": result.stderr[-4000:],
+            "note": "Fetched artefacts are read-only study material and "
+                    "controls; never submit someone else's generator.",
+        }
 
     def _list_approvals(self, args: dict[str, Any]) -> Any:
         requests = read_json(self.root / status_module.APPROVALS_FILE).get(
@@ -445,8 +561,9 @@ class Server:
         }
 
 
-def serve(root: Path, stdin=None, stdout=None) -> int:
-    server = Server(root)
+def serve(root: Path, stdin=None, stdout=None, *,
+          chain_toml: Path | None = None, network: str = "finney") -> int:
+    server = Server(root, chain_toml=chain_toml, network=network)
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     for line in stdin:
@@ -474,8 +591,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path,
                         default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--chain-toml", default="",
+                        help="Chain config for fetch_generator; defaults to "
+                             "CASCADE_CHAIN_TOML, then $CASCADE_DIR/chain.toml.")
+    parser.add_argument("--network", default="finney")
     args = parser.parse_args(argv)
-    return serve(args.root.resolve())
+    return serve(
+        args.root.resolve(),
+        chain_toml=Path(args.chain_toml) if args.chain_toml else None,
+        network=args.network,
+    )
 
 
 if __name__ == "__main__":

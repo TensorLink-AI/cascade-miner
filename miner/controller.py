@@ -243,12 +243,16 @@ cfg = load_chain_config(sys.argv[1])
 doc = json.loads(fetch_receipt_text(cfg, None))
 receipt = load_receipt(json.dumps(doc))
 out = {"summary": summarize_receipt(receipt)}
+heat = doc.get("manifest", {}).get("heat") or {}
+# Keep the full field lists: generators are public after their round reveals,
+# so past entrants are study material an agent may fetch and diff against.
+out["participants"] = doc.get("participants", [])
+out["heat"] = heat
 hotkey = sys.argv[2]
 if hotkey:
     out["miner_participant"] = next(
         (p for p in doc.get("participants", []) if p.get("hotkey") == hotkey), None
     )
-    heat = doc.get("manifest", {}).get("heat") or {}
     out["miner_heat"] = next(
         (p for p in heat.get("entrants", []) if p.get("hotkey") == hotkey), None
     )

@@ -47,7 +47,9 @@ claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
 ```
 
 Key tools: `miner_status` and `get_brief` to orient, `run_quick_verify` for
-free local checks, `log_experiment`/`list_experiments` for the structured
+free local checks, `list_heat_entrants` and `fetch_generator` to study public
+generators from completed rounds (past kings and heat entrants — never submit
+someone else's work), `log_experiment`/`list_experiments` for the structured
 ledger (`runs/experiments.jsonl` — record the narrative in
 `notes/EXPERIMENTS.md` as well), and `request_action` to queue a privileged
 action for approval. `request_action` and `runs/agent-request.json` are

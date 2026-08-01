@@ -1,8 +1,10 @@
 import io
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from miner import mcp_server
 from miner.controller import read_json
@@ -62,6 +64,7 @@ class ProtocolTests(ServerHarness):
         names = {tool["name"] for tool in response["result"]["tools"]}
         self.assertEqual(names, {
             "miner_status", "get_state", "get_latest_receipt",
+            "list_heat_entrants", "fetch_generator",
             "list_approvals", "request_action", "get_policy",
             "log_experiment", "list_experiments", "run_quick_verify",
             "get_improve_request", "respond_improve_request", "get_brief",
@@ -187,6 +190,98 @@ class ReadToolTests(ServerHarness):
         self.assertIn("noise floor", joined)
         self.assertIn("notes/METHOD.md", brief["canonical_docs"])
         self.assertIn("status", brief)
+
+
+class HeatEntrantTests(ServerHarness):
+    def _seed_receipt(self, receipt: dict) -> None:
+        state = self.root / "runs/controller-state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"last_receipt": receipt}),
+                         encoding="utf-8")
+
+    def test_no_receipt_yet(self):
+        payload = self.payload(self.call("list_heat_entrants"))
+        self.assertIsNone(payload["round_id"])
+        self.assertIn("run the controller once", payload["note"])
+
+    def test_full_entrant_lists_are_returned(self):
+        self._seed_receipt({
+            "round_id": "round-9",
+            "summary": {"king_gen_ref": "hippius://king"},
+            "participants": [{"hotkey": "us"}, {"hotkey": "them"}],
+            "heat": {"entrants": [
+                {"hotkey": "them", "rank": 1, "gen_ref": "hippius://them"},
+                {"hotkey": "us", "rank": 2},
+            ]},
+        })
+        payload = self.payload(self.call("list_heat_entrants"))
+        self.assertEqual(payload["round_id"], "round-9")
+        self.assertEqual(payload["king_gen_ref"], "hippius://king")
+        self.assertEqual(len(payload["entrants"]), 2)
+        self.assertEqual(len(payload["participants"]), 2)
+        self.assertNotIn("note", payload)
+
+    def test_pre_feature_receipt_gets_an_explanatory_note(self):
+        self._seed_receipt({
+            "round_id": "round-8",
+            "summary": {"king_gen_ref": "hippius://king"},
+            "miner_heat": {"rank": 3},
+        })
+        payload = self.payload(self.call("list_heat_entrants"))
+        self.assertEqual(payload["entrants"], [])
+        self.assertIn("before entrant lists were kept", payload["note"])
+
+
+class FetchGeneratorTests(ServerHarness):
+    def test_fetch_invokes_cascade_with_a_guarded_destination(self):
+        with patch.object(mcp_server.subprocess, "run",
+                          return_value=CompletedProcess(
+                              [], 0, stdout="fetched", stderr="")) as run:
+            payload = self.payload(self.call("fetch_generator", {
+                "ref": "hippius://heats/round-9/entrant-a",
+            }))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[1], "fetch")
+        self.assertEqual(argv[2], "hippius://heats/round-9/entrant-a")
+        self.assertIn("--chain-toml", argv)
+        self.assertIn("--network", argv)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["path"],
+                         str(self.root / "generators/entrant-a"))
+
+    def test_out_name_may_not_traverse(self):
+        result = self.call("fetch_generator",
+                           {"ref": "hippius://x", "out_name": "../ops"})
+        self.assertTrue(result["isError"])
+        self.assertIn("out_name", result["content"][0]["text"])
+
+    def test_existing_destination_needs_overwrite(self):
+        occupied = self.root / "generators/king-control"
+        occupied.mkdir(parents=True)
+        (occupied / "generator.py").write_text("x", encoding="utf-8")
+        result = self.call("fetch_generator", {
+            "ref": "hippius://king", "out_name": "king-control"})
+        self.assertTrue(result["isError"])
+        self.assertIn("overwrite", result["content"][0]["text"])
+        with patch.object(mcp_server.subprocess, "run",
+                          return_value=CompletedProcess([], 0, "", "")):
+            payload = self.payload(self.call("fetch_generator", {
+                "ref": "hippius://king", "out_name": "king-control",
+                "overwrite": True}))
+        self.assertTrue(payload["ok"])
+
+    def test_empty_ref_is_a_tool_error(self):
+        result = self.call("fetch_generator", {"ref": "  "})
+        self.assertTrue(result["isError"])
+
+    def test_failed_fetch_reports_stderr(self):
+        with patch.object(mcp_server.subprocess, "run",
+                          return_value=CompletedProcess(
+                              [], 1, stdout="", stderr="permission denied")):
+            payload = self.payload(self.call("fetch_generator", {
+                "ref": "hippius://king", "out_name": "study"}))
+        self.assertFalse(payload["ok"])
+        self.assertIn("permission denied", payload["stderr"])
 
 
 class ImproveHandshakeTests(ServerHarness):
