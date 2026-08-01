@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -17,6 +18,13 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+# Polling settings for backgrounded remote training. The SSH calls made while
+# a run is in flight are short; only the run itself is long.
+LAUNCH_TIMEOUT = 300
+PROBE_TIMEOUT = 300
+MAX_CONSECUTIVE_PROBE_FAILURES = 10
+UNSAFE_LABEL = re.compile(r"[^A-Za-z0-9_.-]")
 
 ROOT = Path(__file__).absolute().parents[1]
 if str(ROOT) not in sys.path:
@@ -67,15 +75,125 @@ def wait_for_pod(name: str, timeout: int = 600) -> pods.Pod:
     raise TimeoutError(f"rented pod {name} did not become ready within {timeout}s")
 
 
-def checked_remote(pod: pods.Pod, argv: list[str], timeout: int) -> None:
+def poll_seconds() -> int:
+    value = int(os.environ.get("CASCADE_PROGRESS_POLL_SECONDS", "30"))
+    if value <= 0:
+        raise ValueError("CASCADE_PROGRESS_POLL_SECONDS must be positive")
+    return value
+
+
+def heartbeat_seconds() -> int:
+    value = int(os.environ.get("CASCADE_PROGRESS_HEARTBEAT_SECONDS", "600"))
+    if value <= 0:
+        raise ValueError("CASCADE_PROGRESS_HEARTBEAT_SECONDS must be positive")
+    return value
+
+
+def remote_paths(label: str) -> tuple[str, str]:
+    base = f"/tmp/cascade-eval-{UNSAFE_LABEL.sub('-', label)}"
+    return f"{base}.log", f"{base}.status"
+
+
+def parse_probe(stdout: str) -> tuple[str, str, str]:
+    """Split a probe reply into (exit status, last log line, GPU reading)."""
+    fields = {"CASCADE_STATUS": "", "CASCADE_LOG": "", "CASCADE_GPU": ""}
+    for line in stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in fields:
+            fields[key] = value.strip()
+    return fields["CASCADE_STATUS"], fields["CASCADE_LOG"], fields["CASCADE_GPU"]
+
+
+def remote_log_tail(pod: pods.Pod, log: str, lines: int = 60) -> str:
+    try:
+        result = pod.ssh(f"tail -n {lines} {log} 2>/dev/null", timeout=PROBE_TIMEOUT)
+    except (subprocess.SubprocessError, OSError) as exc:  # noqa: BLE001
+        return f"<could not read {log}: {exc!r}>"
+    return (result.stdout or result.stderr).strip()[-4000:]
+
+
+def checked_remote(pod: pods.Pod, argv: list[str], timeout: int, *,
+                   label: str, say=print) -> None:
+    """Run one evaluation on the pod, detached from the SSH session.
+
+    Holding a single SSH channel open for the whole run meant any dropped
+    connection abandoned training that was still happening on the pod: the
+    work continued, the harness errored, and the rented hour was wasted.
+    The command is backgrounded under ``nohup`` and its exit status written to
+    a marker file, so a broken connection costs one poll interval instead of
+    the run. Polling also gives the only visibility into a 40-minute train.
+    """
+    log, status = remote_paths(label)
     command = (
         f"cd {shlex.quote(pods.REMOTE_ROOT)} && "
         + " ".join(shlex.quote(arg) for arg in argv)
     )
-    result = pod.ssh(command, timeout=timeout)
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip()[-4000:]
-        raise RuntimeError(f"remote evaluation failed ({result.returncode}): {detail}")
+    wrapped = f"{command}; echo $? > {status}"
+    launch = (
+        f"rm -f {status} {log}; "
+        f"nohup sh -c {shlex.quote(wrapped)} >{log} 2>&1 </dev/null & "
+        "echo CASCADE_LAUNCHED"
+    )
+    started = pod.ssh(launch, timeout=LAUNCH_TIMEOUT)
+    if "CASCADE_LAUNCHED" not in started.stdout:
+        detail = (started.stderr or started.stdout).strip()[-2000:]
+        raise RuntimeError(f"could not launch remote evaluation {label}: {detail}")
+    say(f"[{label}] launched; polling {status}", flush=True)
+
+    probe = (
+        f"echo CASCADE_STATUS=$(cat {status} 2>/dev/null); "
+        f"echo CASCADE_LOG=$(tail -n 1 {log} 2>/dev/null); "
+        "echo CASCADE_GPU=$(nvidia-smi --query-gpu=utilization.gpu,memory.used "
+        "--format=csv,noheader 2>/dev/null | head -n 1)"
+    )
+    interval, heartbeat = poll_seconds(), heartbeat_seconds()
+    start = time.monotonic()
+    deadline = start + timeout
+    failures = 0
+    reported = ""
+    last_beat = start
+    while True:
+        try:
+            result = pod.ssh(probe, timeout=PROBE_TIMEOUT)
+        except (subprocess.SubprocessError, OSError) as exc:  # noqa: BLE001
+            result, reason = None, repr(exc)
+        else:
+            reason = (result.stderr or "").strip()[-500:]
+        if result is None or result.returncode:
+            # A dropped probe says nothing about the run, which is detached.
+            failures += 1
+            if failures >= MAX_CONSECUTIVE_PROBE_FAILURES:
+                raise RuntimeError(
+                    f"lost contact with {pod.name} while running {label} "
+                    f"({failures} consecutive failed probes): {reason}"
+                )
+            say(f"[{label}] probe failed ({failures}), retrying: {reason}", flush=True)
+        else:
+            failures = 0
+            code, line, gpu = parse_probe(result.stdout)
+            now = time.monotonic()
+            if line and line != reported:
+                say(f"[{label}] {line}", flush=True)
+                reported = line
+                last_beat = now
+            elif now - last_beat >= heartbeat:
+                say(f"[{label}] {(now - start) / 60:.0f}m elapsed"
+                    + (f", gpu {gpu}" if gpu else ""), flush=True)
+                last_beat = now
+            if code:
+                if code == "0":
+                    say(f"[{label}] finished in {(now - start) / 60:.1f}m", flush=True)
+                    return
+                raise RuntimeError(
+                    f"remote evaluation {label} failed ({code}): "
+                    f"{remote_log_tail(pod, log)}"
+                )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"remote evaluation {label} did not finish within {timeout}s; "
+                f"last log: {remote_log_tail(pod, log)}"
+            )
+        time.sleep(interval)
 
 
 def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
@@ -147,7 +265,7 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
                         "--scores-root", f"{pods.REMOTE_ROOT}/scores",
                         "--ckpt-root", f"{pods.REMOTE_ROOT}/ckpts",
                         "--seed", str(seed), "--train-hours", str(train_hours),
-                    ], timeout=remote_timeout)
+                    ], timeout=remote_timeout, label=f"{name}-seed{seed}")
             pod.pull(f"{pods.REMOTE_ROOT}/scores/", str(local_scores))
         finally:
             if puller is not None:

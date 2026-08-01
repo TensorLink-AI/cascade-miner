@@ -24,6 +24,10 @@ WALLET_HOTKEY="${CASCADE_WALLET_HOTKEY:-default}"
 WALLET_PATH="${BT_WALLET_PATH:-$HOME/.bittensor/wallets}"
 CANDIDATE="generators/candidate"
 
+AGENT_BACKEND="${CASCADE_AGENT:-auto}"
+QUICK_VERIFY=0
+QUICK_VERIFY_SERIES=32
+
 WITH_WALLET=0
 DRY_RUN=0
 SKIP_VENV=0
@@ -64,6 +68,10 @@ Options:
                           ops/create-next-hotkey). It refuses until an operator
                           implements it; this script never touches wallet
                           secrets, mnemonics, or the chain itself.
+  --quick-verify          replace step 7 with a memory-bounded determinism and
+                          contract check. For hosts where `cascade verify` is
+                          OOM-killed; it is NOT a substitute before submission.
+  --quick-verify-series N series per run for --quick-verify (default: 32)
   --skip-venv, --skip-lium, --skip-ssh-key, --skip-pool, --skip-seed,
   --skip-verify           skip individual steps
   --dry-run               print what each step would run, change nothing
@@ -80,6 +88,8 @@ while [ $# -gt 0 ]; do
         --wallet-name) WALLET_NAME="${2:?--wallet-name needs a name}"; shift 2 ;;
         --wallet-hotkey) WALLET_HOTKEY="${2:?--wallet-hotkey needs a name}"; shift 2 ;;
         --with-wallet) WITH_WALLET=1; shift ;;
+        --quick-verify) QUICK_VERIFY=1; shift ;;
+        --quick-verify-series) QUICK_VERIFY_SERIES="${2:?--quick-verify-series needs a count}"; shift 2 ;;
         --skip-venv) SKIP_VENV=1; shift ;;
         --skip-lium) SKIP_LIUM=1; shift ;;
         --skip-ssh-key) SKIP_SSH_KEY=1; shift ;;
@@ -281,33 +291,48 @@ fi
 step "7/8 verify the starter candidate"
 if [ "$SKIP_VERIFY" = 1 ]; then
     info "skipped"
-elif [ ! -x "$VENV/bin/cascade" ] && [ "$DRY_RUN" = 0 ]; then
-    action "cascade verify needs the venv from step 1"
 elif [ ! -f "$ROOT/$CANDIDATE/generator.py" ] && [ "$DRY_RUN" = 0 ]; then
     action "no candidate at $CANDIDATE"
+elif [ "$QUICK_VERIFY" = 1 ]; then
+    # Determinism and contract only, over a tiny corpus. Not a substitute for
+    # `cascade verify`, which needs memory this host was told it lacks.
+    if attempt_quiet "$VENV_PY" "$ROOT/scripts/quick_verify.py" "$ROOT/$CANDIDATE" \
+        --n-series "$QUICK_VERIFY_SERIES"; then
+        ready "quick-verify passed for $CANDIDATE (determinism only, not cascade verify)"
+        action "run the full \`cascade verify $CANDIDATE\` on a larger host before submitting"
+    else
+        action "quick-verify failed for $CANDIDATE; the generator is not deterministic or breaks the contract"
+    fi
+elif [ ! -x "$VENV/bin/cascade" ] && [ "$DRY_RUN" = 0 ]; then
+    action "cascade verify needs the venv from step 1"
 else
     if attempt_quiet "$VENV/bin/cascade" verify "$ROOT/$CANDIDATE" \
         --chain-toml "$CASCADE_DIR/chain.toml"; then
         ready "cascade verify passed for $CANDIDATE"
     else
-        action "cascade verify failed for $CANDIDATE; on a small host this is usually memory"
+        action "cascade verify failed for $CANDIDATE; on a small host this is usually memory — retry with --quick-verify"
     fi
 fi
 
 step "8/8 agent backend"
-AGENT_FOUND=""
-for candidate in claude codex hermes; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        AGENT_FOUND="$candidate"
-        break
-    fi
-done
-if [ -n "$AGENT_FOUND" ]; then
-    ready "improvement agent CLI on PATH: $AGENT_FOUND (CASCADE_AGENT=auto picks it)"
-elif [ -x /opt/hermes/bin/hermes ]; then
-    action "hermes is installed at /opt/hermes/bin but not on PATH; export PATH=/opt/hermes/bin:\$PATH"
+if [ "$AGENT_BACKEND" = "hermes-native" ]; then
+    ready "hermes-native backend selected; the improvement hook hands passes to this session"
+    info "answer them with: python skills/cascade-miner/scripts/improve-request show"
 else
-    action "install an agent CLI (claude, codex, hermes) or set CASCADE_AGENT=custom with CASCADE_AGENT_COMMAND"
+    AGENT_FOUND=""
+    for candidate in claude codex hermes; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            AGENT_FOUND="$candidate"
+            break
+        fi
+    done
+    if [ -n "$AGENT_FOUND" ]; then
+        ready "improvement agent CLI on PATH: $AGENT_FOUND (CASCADE_AGENT=auto picks it)"
+    elif [ -x /opt/hermes/bin/hermes ]; then
+        action "hermes is installed at /opt/hermes/bin but not on PATH; export PATH=/opt/hermes/bin:\$PATH"
+    else
+        action "install an agent CLI (claude, codex, hermes), set CASCADE_AGENT=hermes-native inside an agent session, or set CASCADE_AGENT=custom with CASCADE_AGENT_COMMAND"
+    fi
 fi
 
 printf '\n=== summary\n'

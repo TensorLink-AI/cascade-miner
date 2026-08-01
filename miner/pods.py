@@ -16,13 +16,15 @@ cascade subnet during development:
   errors on every seed.
 * ``check_ttl_covers`` refuses to start work that cannot finish before the
   pod's TTL. Two full experiments were lost to pods expiring mid-batch.
-* ``rsync`` is installed if missing — some pod images lack it.
+* Transfers use ``tar`` over ssh rather than ``rsync``. Minimal container
+  images ship without rsync and often cannot install it.
 
 The results puller is deliberately NOT optional; see :func:`start_puller`.
 """
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import shlex
@@ -32,12 +34,47 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+
+def _lium_configured_key() -> Path | None:
+    """Read the private key the lium CLI already uses, if it recorded one."""
+    config = Path.home() / ".lium/config.ini"
+    if not config.is_file():
+        return None
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(config)
+    except configparser.Error:
+        return None
+    wanted = ("ssh_key_path", "ssh_private_key_path", "private_key_path",
+              "ssh_key", "key_path")
+    for section in parser.sections():
+        for name in wanted:
+            value = parser[section].get(name, "").strip()
+            if value:
+                return Path(value).expanduser()
+    return None
+
+
+def ssh_key_path() -> Path:
+    """Private key for pod access: env override, then lium's own, then default.
+
+    Hardcoding ``/root/.ssh/id_ed25519`` locked out every non-root operator.
+    """
+    override = os.environ.get("LIUM_SSH_KEY", "").strip()
+    if override:
+        return Path(override).expanduser()
+    configured = _lium_configured_key()
+    if configured is not None:
+        return configured
+    return Path.home() / ".ssh/id_ed25519"
+
+
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
     "-o", "ConnectTimeout=30",
-    "-i", str(Path.home() / ".ssh/id_ed25519"),
+    "-i", str(ssh_key_path()),
 ]
 REMOTE_ROOT = "/root/cascade-miner"   # absolute, always
 REMOTE_PY = f"{REMOTE_ROOT}/.venv/bin/python"
@@ -143,9 +180,7 @@ def assert_single_gpu() -> None:
 
 def provision(pod: Pod, cascade_dir: str, gens: list[str], pools_dir: str) -> None:
     """Sync the project and build the venv. All remote paths absolute."""
-    pod.ssh("command -v rsync >/dev/null || (apt-get update -qq >/dev/null 2>&1; "
-            "apt-get install -y -qq rsync >/dev/null 2>&1); "
-            f"mkdir -p {REMOTE_ROOT}/generators {REMOTE_ROOT}/pools")
+    pod.ssh(f"mkdir -p {REMOTE_ROOT}/generators {REMOTE_ROOT}/pools")
     pod.push(f"{cascade_dir}/", "/root/cascade/")
     for g in gens:
         pod.push(f"{g}/", f"{REMOTE_ROOT}/generators/{g.rstrip('/').split('/')[-1]}/")

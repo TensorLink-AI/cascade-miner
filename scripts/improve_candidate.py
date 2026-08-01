@@ -1,12 +1,25 @@
-"""Run one bounded generator-improvement pass with a supported agent CLI."""
+"""Run one bounded generator-improvement pass with a supported agent backend.
+
+Most backends spawn a non-interactive CLI. ``hermes-native`` is different: an
+agent that is *already* the session has no CLI to call itself with, so the pass
+is handed over as a file request and this process waits for the reply.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
+
+REQUEST_NAME = "runs/improve-request.json"
+RESPONSE_NAME = "runs/improve-response.json"
+DEFAULT_RESPONSE_TIMEOUT = 3600
+DEFAULT_RESPONSE_POLL = 5
+TERMINAL_STATUSES = {"completed", "failed", "rejected", "skipped"}
 
 
 def build_prompt(root: Path, event: str, mode: str = "human") -> str:
@@ -44,6 +57,75 @@ commit, push, or expose private evaluation data yourself.
 """
 
 
+def read_json(path: Path) -> dict:
+    """Tolerate a partially-written file; the writer is another process."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path: Path, payload: dict) -> None:
+    """Write atomically so a poller never observes a half-written request."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+
+
+def request_improvement(root: Path, prompt: str, event: str, mode: str,
+                        *, timeout: int, poll: int, say=print) -> int:
+    """Hand the pass to the surrounding agent session and wait for its reply.
+
+    ``CASCADE_AGENT=hermes-native`` exists because the improvement hook used to
+    shell out to a ``hermes`` binary that does not exist inside a Hermes
+    session — the agent cannot invoke itself as a CLI. Instead the prompt is
+    published to ``runs/improve-request.json``; the session picks it up and
+    answers in ``runs/improve-response.json``.
+    """
+    request_path, response_path = root / REQUEST_NAME, root / RESPONSE_NAME
+    request_id = f"{int(time.time())}-{os.getpid()}"
+    # Never let a previous cycle's reply satisfy this request.
+    response_path.unlink(missing_ok=True)
+    write_json(request_path, {
+        "id": request_id,
+        "status": "pending",
+        "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": mode,
+        "root": str(root),
+        "event": read_json_string(event),
+        "prompt": prompt,
+    })
+    say(f"improvement request {request_id} written to {REQUEST_NAME}; "
+        f"waiting up to {timeout}s for {RESPONSE_NAME}", flush=True)
+
+    deadline = time.monotonic() + timeout
+    while True:
+        response = read_json(response_path)
+        status = str(response.get("status", "")).strip().lower()
+        if response.get("id") == request_id and status in TERMINAL_STATUSES:
+            detail = str(response.get("detail", "")).strip()
+            say(f"improvement request {request_id}: {status}"
+                + (f" — {detail}" if detail else ""), flush=True)
+            request_path.unlink(missing_ok=True)
+            return 0 if status == "completed" else 1
+        if time.monotonic() >= deadline:
+            # Leave the request in place: the session may still be working, and
+            # a stale pending file is the only evidence of what was asked.
+            say(f"improvement request {request_id} timed out after {timeout}s; "
+                f"{REQUEST_NAME} left in place", flush=True)
+            return 124
+        time.sleep(poll)
+
+
+def read_json_string(value: str) -> dict:
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def agent_command(agent: str, root: Path, prompt: str) -> tuple[list[str], str | None]:
     if agent == "codex":
         return (["codex", "exec", "--ephemeral", "--sandbox", "workspace-write",
@@ -72,7 +154,20 @@ def choose_agent(requested: str) -> str:
             return candidate
     if os.environ.get("CASCADE_AGENT_COMMAND"):
         return "custom"
-    raise RuntimeError("no supported agent CLI found; configure CASCADE_AGENT_COMMAND")
+    # Deliberately not auto-detected: "no CLI on PATH" is a broken install far
+    # more often than it is an in-session agent, and the file handshake blocks
+    # for an hour before anyone finds out.
+    raise RuntimeError(
+        "no supported agent CLI found; configure CASCADE_AGENT_COMMAND, or set "
+        "CASCADE_AGENT=hermes-native when running inside an agent session"
+    )
+
+
+def positive_int(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
 
 
 def main() -> int:
@@ -80,7 +175,18 @@ def main() -> int:
     event = os.environ.get("CASCADE_MINER_EVENT", "{}")
     agent = choose_agent(os.environ.get("CASCADE_AGENT", "auto").strip().lower())
     mode = os.environ.get("CASCADE_MINER_MODE", "human").strip().lower()
-    argv, stdin = agent_command(agent, root, build_prompt(root, event, mode))
+    prompt = build_prompt(root, event, mode)
+    if agent == "hermes-native":
+        print("requesting improvement pass from the surrounding agent session",
+              flush=True)
+        return request_improvement(
+            root, prompt, event, mode,
+            timeout=positive_int("CASCADE_IMPROVE_RESPONSE_TIMEOUT",
+                                 DEFAULT_RESPONSE_TIMEOUT),
+            poll=positive_int("CASCADE_IMPROVE_RESPONSE_POLL_SECONDS",
+                              DEFAULT_RESPONSE_POLL),
+        )
+    argv, stdin = agent_command(agent, root, prompt)
     print(f"running improvement pass with {agent}", flush=True)
     result = subprocess.run(argv, input=stdin, text=True, cwd=root)
     return result.returncode

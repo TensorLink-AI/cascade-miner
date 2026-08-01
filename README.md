@@ -335,6 +335,20 @@ Other agents work through `CASCADE_AGENT=custom` and
 to receive the prompt on standard input. The command must be non-interactive
 and return a nonzero exit status on failure.
 
+When the controller runs *inside* an agent session there is no CLI for the
+agent to invoke itself with. `CASCADE_AGENT=hermes-native` swaps the subprocess
+for a file handshake: the hook publishes the prompt to
+`runs/improve-request.json` and waits for `runs/improve-response.json`.
+
+```bash
+CASCADE_AGENT=hermes-native .venv/bin/python scripts/improve_candidate.py &
+python skills/cascade-miner/scripts/improve-request show
+python skills/cascade-miner/scripts/improve-request respond --status completed \
+    --detail "one line on what changed"
+```
+
+`auto` never picks it — see `docs/SETUP.md` for the timeouts and statuses.
+
 Every backend may update `generators/candidate` and the experiment log, and may
 request a named privileged action. It cannot launch that action itself, read
 wallet secrets, commit, or push.
