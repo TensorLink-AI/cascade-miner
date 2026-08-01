@@ -277,6 +277,24 @@ otherwise block for an hour before anyone noticed.
 `skills/cascade-miner/SKILL.md` packages this and the operating rules for
 sessions that load skills.
 
+## Agent-native operation (MCP)
+
+An operator-run agent can drive the harness through MCP instead of raw module
+invocations — the server is dependency-free stdio JSON-RPC:
+
+```bash
+claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
+```
+
+See the "Agent-native interfaces" section of the README for the tool list and
+the `schemas/` directory for the file contracts. To bound autonomous mode,
+copy `policy.example.toml` to `policy.toml` and review each cap; the
+controller loads it automatically (or via `--policy-file` /
+`CASCADE_POLICY_FILE`).
+
+`python -m miner.status` prints a one-look summary of the controller state,
+pending approvals, and the experiment ledger; `--json` emits the same as data.
+
 ## Watching a GPU evaluation
 
 Remote training is launched under `nohup` with its exit status written to a

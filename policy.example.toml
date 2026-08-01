@@ -1,0 +1,29 @@
+# Autonomy policy for cascade-miner — copy to policy.toml and review each cap.
+#
+# When policy.toml exists (or --policy-file / CASCADE_POLICY_FILE is set), it
+# replaces --autonomous-actions as the authority on what autonomous mode may
+# execute, and bounds how much it may do per trailing 24h window. Anything the
+# policy declines becomes an ordinary pending approval instead of running —
+# a cap pauses spending, it never drops a request.
+#
+# Human mode is unaffected: every action still queues for approval.
+# An action with no section here is never autonomous.
+
+version = 1
+
+[actions.gpu_evaluation]
+autonomous = true
+max_runs_per_day = 4      # launched autonomous evaluations per trailing 24h
+max_hours_per_run = 2     # a single request estimating more than this queues
+max_hours_per_day = 6     # summed estimated_hours per trailing 24h
+
+# Wallet/chain actions stay human-gated. Enable them only after implementing
+# and reviewing the ops/ wrappers — never while they are refusing stubs.
+[actions.create_hotkey]
+autonomous = false
+
+[actions.register_hotkey]
+autonomous = false
+
+[actions.submit_candidate]
+autonomous = false

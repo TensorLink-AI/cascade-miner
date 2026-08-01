@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .env
 
+# Operator-owned autonomy policy — copy policy.example.toml and review it
+/policy.toml
+
 # Eval-pool data and raw score archives — regenerable, not code
 pools/
 scores/

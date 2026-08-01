@@ -37,6 +37,27 @@ export CASCADE_DIR=/path/to/cascade
 - Never place credentials, wallet files, mnemonics, private pool data, scores,
   or generated runtime state in Git.
 
+## Agent-native interfaces
+
+If your session supports MCP, prefer the typed tool surface over shelling into
+`miner.*` modules:
+
+```bash
+claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
+```
+
+Key tools: `miner_status` and `get_brief` to orient, `run_quick_verify` for
+free local checks, `log_experiment`/`list_experiments` for the structured
+ledger (`runs/experiments.jsonl` — record the narrative in
+`notes/EXPERIMENTS.md` as well), and `request_action` to queue a privileged
+action for approval. `request_action` and `runs/agent-request.json` are
+requests only — the controller applies its mode/policy gate before anything
+runs. File contracts are documented under `schemas/`.
+
+When a `policy.toml` exists, autonomous mode is bounded by per-action caps
+(runs and estimated hours per trailing 24h). A declined action queues for
+human approval; it is not an error, and not a loophole to work around.
+
 ## Agent backends
 
 The improvement hook (`scripts/improve_candidate.py`) spawns a non-interactive

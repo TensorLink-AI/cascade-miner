@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TensorLink-AI/cascade-miner/schemas/agent-request.schema.json",
+  "title": "cascade-miner agent request",
+  "description": "The privileged-action request an improvement pass writes to runs/agent-request.json. The controller consumes it after the pass exits and turns it into an approval-queue entry (human mode) or an allowlisted execution (autonomous mode). Writing this file never executes anything.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reason"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["gpu_evaluation", "create_hotkey", "register_hotkey", "submit_candidate"]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why this spend/action is needed now; shown verbatim to the approver."
+    },
+    "candidate_path": {
+      "type": "string",
+      "default": "generators/candidate",
+      "description": "Repo-relative path of the candidate this action concerns."
+    },
+    "estimated_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Expected paid runtime; counted against the autonomy policy's hour caps."
+    }
+  }
+}

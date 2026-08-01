@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TensorLink-AI/cascade-miner/schemas/approval-request.schema.json",
+  "title": "cascade-miner approval queue entry",
+  "description": "One entry of runs/approvals.json `requests`. Created by the controller from an agent request, or directly by the MCP request_action tool. Approved entries are executed by the running controller via the operator-configured command for the action.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "action", "reason", "status", "created_at"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "action": {
+      "type": "string",
+      "enum": ["gpu_evaluation", "create_hotkey", "register_hotkey", "submit_candidate", "candidate_review"]
+    },
+    "reason": {"type": "string"},
+    "context": {
+      "type": "object",
+      "description": "Action inputs; gpu_evaluation reads candidate_path and estimated_hours from here."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "approved", "rejected", "completed", "failed", "blocked"]
+    },
+    "created_at": {"type": "string"},
+    "result": {
+      "type": "object",
+      "description": "Command outcome once executed: exit_code, stdout, stderr tails."
+    }
+  }
+}

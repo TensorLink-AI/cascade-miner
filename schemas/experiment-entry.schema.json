@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TensorLink-AI/cascade-miner/schemas/experiment-entry.schema.json",
+  "title": "cascade-miner experiment ledger entry",
+  "description": "One line of runs/experiments.jsonl. The pairing fields (seeds, snapshots) and noise_floor exist so a later reader can tell whether two results are comparable; a verdict without them is not evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "at", "hypothesis", "status"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "at": {"type": "string", "description": "UTC timestamp, ISO 8601."},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "change": {
+      "type": "string",
+      "description": "The one thing this arm changes versus its control."
+    },
+    "arm": {"type": "string", "description": "Candidate directory of this arm."},
+    "seeds": {"type": "array", "items": {"type": "integer"}},
+    "snapshots": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Eval-pool snapshots both arms were scored on; arms scored over different snapshot sets are not paired."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["planned", "running", "measured", "null", "win", "loss", "abandoned"]
+    },
+    "noise_floor": {
+      "type": ["number", "null"],
+      "description": "The measured same-generator, same-seed score spread the verdict was read against."
+    },
+    "result": {"type": "string"},
+    "supersedes": {
+      "type": "string",
+      "description": "Id of the entry this one updates (e.g. planned -> measured)."
+    },
+    "notes": {"type": "string"}
+  }
+}
