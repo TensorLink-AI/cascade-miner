@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from miner import policy as policy_module
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOOK_TIMEOUT = 2 * 3600
 
@@ -241,12 +243,16 @@ cfg = load_chain_config(sys.argv[1])
 doc = json.loads(fetch_receipt_text(cfg, None))
 receipt = load_receipt(json.dumps(doc))
 out = {"summary": summarize_receipt(receipt)}
+heat = doc.get("manifest", {}).get("heat") or {}
+# Keep the full field lists: generators are public after their round reveals,
+# so past entrants are study material an agent may fetch and diff against.
+out["participants"] = doc.get("participants", [])
+out["heat"] = heat
 hotkey = sys.argv[2]
 if hotkey:
     out["miner_participant"] = next(
         (p for p in doc.get("participants", []) if p.get("hotkey") == hotkey), None
     )
-    heat = doc.get("manifest", {}).get("heat") or {}
     out["miner_heat"] = next(
         (p for p in heat.get("entrants", []) if p.get("hotkey") == hotkey), None
     )
@@ -462,9 +468,31 @@ class Controller:
     register_hotkey_command: str = ""
     submit_command: str = ""
     autonomous_actions: tuple[str, ...] = ("gpu_evaluation",)
+    policy: policy_module.Policy | None = None
     mode: str = "human"
     hook_timeout: int = DEFAULT_HOOK_TIMEOUT
     max_improvements_per_round: int = 1
+
+    def autonomy_gate(self, action: str,
+                      context: dict[str, Any]) -> policy_module.Decision:
+        """Decide whether autonomous mode may execute this action right now.
+
+        With a policy file the policy is authoritative — including its
+        per-window caps, measured from the append-only events file. Without
+        one, the flat ``--autonomous-actions`` allowlist decides, exactly as
+        before policies existed.
+        """
+        if self.policy is not None:
+            usage = policy_module.action_usage(self.events_file, action)
+            return self.policy.decide(
+                action, estimated_hours=context.get("estimated_hours"),
+                usage=usage,
+            )
+        if action in self.autonomous_actions:
+            return policy_module.Decision(True, "allowlisted by --autonomous-actions")
+        return policy_module.Decision(
+            False, f"{action} is not in --autonomous-actions",
+        )
 
     def action_command(self, action: str) -> str:
         return {
@@ -711,7 +739,10 @@ class Controller:
                     ),
                     "estimated_hours": request_data.get("estimated_hours"),
                 }
-                if self.mode == "human" or action not in self.autonomous_actions:
+                decision = self.autonomy_gate(action, context)
+                if self.mode == "human" or not decision.allowed:
+                    if self.mode == "autonomous":
+                        reason = f"{reason} [policy: {decision.reason}]"
                     request = queue_approval(
                         self.approvals_file, action=action, reason=reason,
                         context=context,
@@ -828,6 +859,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("CASCADE_AUTONOMOUS_ACTIONS", "gpu_evaluation"),
         help="Comma-separated named actions autonomous mode may execute.",
     )
+    parser.add_argument(
+        "--policy-file",
+        default=os.environ.get("CASCADE_POLICY_FILE", ""),
+        help="Autonomy policy TOML (per-action caps). When set — or when "
+             "policy.toml exists in the repo root — it replaces "
+             "--autonomous-actions as the autonomous-mode authority.",
+    )
     return parser
 
 
@@ -890,6 +928,15 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "unknown autonomous actions: " + ", ".join(sorted(unknown_actions))
         )
+    policy_file = Path(args.policy_file) if str(args.policy_file).strip() else None
+    if policy_file is None and (root / "policy.toml").is_file():
+        policy_file = root / "policy.toml"
+    policy = None
+    if policy_file is not None:
+        try:
+            policy = policy_module.load_policy(under_root(policy_file))
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
     cascade_python = absolute_path(args.cascade_python or root / ".venv/bin/python")
     assert_runtime(cascade_python, root)
     controller = Controller(
@@ -913,6 +960,7 @@ def main(argv: list[str] | None = None) -> int:
         register_hotkey_command=args.register_hotkey_command,
         submit_command=args.submit_command,
         autonomous_actions=autonomous_actions,
+        policy=policy,
         mode=args.mode,
         hook_timeout=max(60, args.hook_timeout),
         max_improvements_per_round=max(0, args.max_improvements_per_round),

@@ -391,6 +391,56 @@ CASCADE_AUTONOMOUS_ACTIONS=gpu_evaluation,create_hotkey,register_hotkey,submit_c
 Action failures stop the loop, and the per-round iteration cap prevents an
 unbounded cycle. Git commits and pushes are never autonomous.
 
+## Agent-native interfaces
+
+The improvement hook covers agents this repo spawns. For the other direction —
+an agent the operator runs (Claude Code, Codex, anything speaking MCP) — the
+harness exposes a typed tool surface:
+
+```bash
+claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
+```
+
+The server is stdio JSON-RPC with no extra dependencies. Its tools are reads
+(`miner_status`, `get_state`, `get_latest_receipt`, `list_heat_entrants`,
+`list_approvals`, `get_policy`, `get_brief`), cheap local checks
+(`run_quick_verify`), free public-artefact fetches (`fetch_generator` — the
+king, a past heat entrant, a dethroned king, into a guarded `generators/`
+directory), the structured experiment ledger (`log_experiment`,
+`list_experiments`), the hermes-native handshake (`get_improve_request`,
+`respond_improve_request`), and `request_action` — which queues a durable
+approval request and never executes anything. The privilege boundary is
+identical to every other agent path: no wallet secrets, no spending, no
+chain writes.
+
+Round receipts are stored with their full participant and heat-entrant
+lists, not just this miner's entry — generators from completed (revealed)
+rounds are public, so past entrants are study material: list them, fetch
+them, diff them against your candidate. The current heat's live rivals stay
+timelocked until reveal; that is the subnet's design.
+
+`python -m miner.status [--json]` prints the same one-look summary for humans
+and scripts: round, king ref, eval pool, candidate digest, pending approvals,
+and the experiment ledger tail.
+
+`python -m miner.experiments log|list` maintains `runs/experiments.jsonl`, the
+structured twin of `notes/EXPERIMENTS.md`: hypothesis, the one change per arm,
+seeds, snapshots, status, and the noise floor each verdict was read against.
+
+Machine-facing contracts live under `schemas/`: the agent-request file, the
+approval-queue entry, and the experiment ledger entry.
+
+### Autonomy policy
+
+`policy.toml` (copy `policy.example.toml`) bounds what autonomous mode may do
+per trailing 24-hour window — runs per day and estimated hours per run and per
+day, per action. When present (or named via `--policy-file` /
+`CASCADE_POLICY_FILE`) it replaces `--autonomous-actions` as the autonomy
+authority. Anything the policy declines degrades to an ordinary pending
+approval rather than an error, so a cap pauses spending instead of dropping
+the request. Human mode is unaffected; wallet/chain actions should stay
+non-autonomous until the `ops/` wrappers are deliberately implemented.
+
 ## Development
 
 This miner harness was developed with Claude Code.
