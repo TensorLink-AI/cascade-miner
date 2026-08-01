@@ -41,7 +41,9 @@ class FakePuller:
 
 
 class FakePod:
-    def __init__(self, events, *, fail_remote=False):
+    """Emulates the launch/poll protocol: nohup, then a status marker file."""
+
+    def __init__(self, events, *, fail_remote=False, probe_failures=0):
         self.name = "paid-pod"
         self.ip = "127.0.0.1"
         self.port = "22"
@@ -49,13 +51,30 @@ class FakePod:
         self.ttl_iso = ""
         self.events = events
         self.fail_remote = fail_remote
+        self.probe_failures = probe_failures
         self.commands = []
+        self.launches = []
+        self.probes = 0
 
     def ssh(self, command, timeout=600):
-        self.events.append("remote")
         self.commands.append(command)
-        code = 7 if self.fail_remote else 0
-        return subprocess.CompletedProcess([], code, "", "remote boom" if code else "")
+        if "CASCADE_LAUNCHED" in command:
+            self.events.append("launch")
+            self.launches.append(command)
+            return subprocess.CompletedProcess([], 0, "CASCADE_LAUNCHED\n", "")
+        if "CASCADE_STATUS" in command:
+            self.events.append("probe")
+            self.probes += 1
+            if self.probes <= self.probe_failures:
+                return subprocess.CompletedProcess([], 255, "", "connection reset")
+            code = 7 if self.fail_remote else 0
+            return subprocess.CompletedProcess(
+                [], 0,
+                f"CASCADE_STATUS={code}\nCASCADE_LOG=step 100\nCASCADE_GPU=98 %, 12 MiB\n",
+                "",
+            )
+        self.events.append("remote")
+        return subprocess.CompletedProcess([], 0, "remote boom", "")
 
     def push(self, local, remote, timeout=900):
         self.events.append("push")
@@ -78,9 +97,9 @@ class GpuEvaluationTests(TestCase):
         }))
         return root
 
-    def run_with_fakes(self, root: Path, *, fail_remote=False):
+    def run_with_fakes(self, root: Path, *, fail_remote=False, probe_failures=0):
         events = []
-        pod = FakePod(events, fail_remote=fail_remote)
+        pod = FakePod(events, fail_remote=fail_remote, probe_failures=probe_failures)
         fetch_ok = subprocess.CompletedProcess([], 0, "", "")
         event = {"context": {
             "candidate_path": "generators/candidate", "estimated_hours": 3,
@@ -91,6 +110,7 @@ class GpuEvaluationTests(TestCase):
             return FakePuller(events)
 
         with patch.object(gpu_eval.subprocess, "run", return_value=fetch_ok), \
+                patch.object(gpu_eval.time, "sleep"), \
                 patch.object(gpu_eval, "wait_for_pod", return_value=pod), \
                 patch.object(pods, "rent", side_effect=lambda *a, **k: events.append("rent")), \
                 patch.object(pods, "assert_single_gpu"), \
@@ -104,7 +124,7 @@ class GpuEvaluationTests(TestCase):
                     "CASCADE_EVAL_SEEDS": "4,9",
                 }, clear=False):
             if fail_remote:
-                with self.assertRaisesRegex(RuntimeError, "remote evaluation failed"):
+                with self.assertRaisesRegex(RuntimeError, "remote evaluation .* failed"):
                     gpu_eval.run(event, root=root)
             else:
                 self.assertEqual(gpu_eval.run(event, root=root), 0)
@@ -114,21 +134,58 @@ class GpuEvaluationTests(TestCase):
     def test_paired_seeds_pull_before_training_and_stop_after_success(self):
         with TemporaryDirectory() as directory:
             events, pod = self.run_with_fakes(self.make_root(directory))
-        self.assertLess(events.index("puller_start"), events.index("remote"))
-        self.assertEqual(len(pod.commands), 4)
-        self.assertIn("generators/king-control", pod.commands[0])
-        self.assertIn("generators/candidate", pod.commands[1])
-        self.assertIn("--seed 4", pod.commands[0])
-        self.assertIn("--seed 4", pod.commands[1])
-        self.assertIn("--seed 9", pod.commands[2])
-        self.assertIn("--seed 9", pod.commands[3])
+        self.assertLess(events.index("puller_start"), events.index("launch"))
+        self.assertEqual(len(pod.launches), 4)
+        self.assertIn("generators/king-control", pod.launches[0])
+        self.assertIn("generators/candidate", pod.launches[1])
+        self.assertIn("--seed 4", pod.launches[0])
+        self.assertIn("--seed 4", pod.launches[1])
+        self.assertIn("--seed 9", pod.launches[2])
+        self.assertIn("--seed 9", pod.launches[3])
         self.assertEqual(events[-1], ("stop", "paid-pod"))
 
-    def test_remote_failure_still_stops_named_pod(self):
+    def test_training_is_detached_so_a_dropped_session_cannot_abandon_it(self):
+        with TemporaryDirectory() as directory:
+            _, pod = self.run_with_fakes(self.make_root(directory))
+        for launch in pod.launches:
+            self.assertIn("nohup ", launch)
+            self.assertIn("</dev/null", launch)
+            self.assertRegex(launch, r"echo \$\? > /tmp/cascade-eval-[\w.-]+\.status")
+        # Each generator/seed pair gets its own marker, never a shared one.
+        markers = {gpu_eval.remote_paths(f"{name}-seed{seed}")
+                   for seed in (4, 9) for name in ("king-control", "candidate")}
+        self.assertEqual(len(markers), 4)
+
+    def test_transient_probe_failures_do_not_abandon_a_running_evaluation(self):
+        with TemporaryDirectory() as directory:
+            events, pod = self.run_with_fakes(self.make_root(directory), probe_failures=3)
+        self.assertEqual(len(pod.launches), 4)
+        self.assertEqual(events[-1], ("stop", "paid-pod"))
+
+    def test_lost_contact_is_reported_rather_than_silently_retried_forever(self):
+        pod = FakePod([], probe_failures=999)
+        with self.assertRaisesRegex(RuntimeError, "lost contact"):
+            with patch.object(gpu_eval.time, "sleep"):
+                gpu_eval.checked_remote(pod, ["/bin/true"], 3600,
+                                        label="king-control-seed0", say=lambda *a, **k: None)
+        self.assertEqual(pod.probes, gpu_eval.MAX_CONSECUTIVE_PROBE_FAILURES)
+
+    def test_nonzero_marker_is_a_failure_and_still_stops_the_named_pod(self):
         with TemporaryDirectory() as directory:
             events, _ = self.run_with_fakes(self.make_root(directory), fail_remote=True)
         self.assertIn("puller_terminate", events)
         self.assertEqual(events[-1], ("stop", "paid-pod"))
+
+    def test_probe_reply_is_parsed_into_status_log_and_gpu(self):
+        self.assertEqual(
+            gpu_eval.parse_probe("CASCADE_STATUS=0\nCASCADE_LOG=a=b\nCASCADE_GPU=98 %, 1 MiB"),
+            ("0", "a=b", "98 %, 1 MiB"),
+        )
+        # An unfinished run reports no status, which must not read as success.
+        self.assertEqual(
+            gpu_eval.parse_probe("CASCADE_STATUS=\nCASCADE_LOG=training\nCASCADE_GPU="),
+            ("", "training", ""),
+        )
 
     def test_approved_event_shape_and_candidate_containment(self):
         context = gpu_eval.approval_context({

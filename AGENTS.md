@@ -44,3 +44,23 @@ subagent for each pass. It supports `hermes`, `claude`, `codex`, `custom`, and
 `auto` (first found). See `docs/SETUP.md` for details. The subagent has no
 conversation context — everything it needs is in this file, `CLAUDE.md`, and
 the `notes/` directory.
+
+### Running inside an agent session
+
+An agent that *is* the session has no CLI to invoke itself with. Set
+`CASCADE_AGENT=hermes-native` and the hook publishes the prompt to
+`runs/improve-request.json`, then blocks on `runs/improve-response.json`
+(`CASCADE_IMPROVE_RESPONSE_TIMEOUT`, default 3600s). Read and answer it with:
+
+```bash
+python skills/cascade-miner/scripts/improve-request show
+python skills/cascade-miner/scripts/improve-request respond --status completed \
+    --detail "one line on what changed"
+```
+
+Statuses are `completed`, `failed`, `rejected`, and `skipped`; only `completed`
+makes the pass succeed. Do the work before responding — the response ends the
+pass. `hermes-native` is never selected by `auto`.
+
+`skills/cascade-miner/SKILL.md` carries the same operating context for sessions
+that load skills.

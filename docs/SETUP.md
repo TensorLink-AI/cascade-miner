@@ -59,10 +59,13 @@ Optional but recommended:
 | Key | Default | What it does |
 |-----|---------|-------------|
 | `CASCADE_MODE` | `human` | `human` = approve GPU spend; `autonomous` = auto-allowlisted actions |
-| `CASCADE_AGENT` | `auto` | Which agent CLI to use for improvement passes (`hermes`, `claude`, `codex`, `custom`) |
+| `CASCADE_AGENT` | `auto` | Improvement backend (`hermes`, `claude`, `codex`, `hermes-native`, `custom`) |
 | `CASCADE_EVAL_SEEDS` | `0,1,2` | Seeds for paired evaluation |
 | `CASCADE_TRAIN_HOURS` | `1` | Training budget per run (heat budget) |
 | `CASCADE_GPU` | `RTX4090` | GPU type to rent from Lium |
+| `LIUM_SSH_KEY` | lium's config, then `~/.ssh/id_ed25519` | Private key for pod access |
+| `CASCADE_PROGRESS_POLL_SECONDS` | `30` | How often a running remote evaluation is polled |
+| `CASCADE_PROGRESS_HEARTBEAT_SECONDS` | `600` | Idle interval before an elapsed/GPU line is printed |
 
 **Important:** Values containing spaces must be quoted in `.env`:
 ```bash
@@ -91,8 +94,9 @@ on `PATH` is authoritative.
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
 ```
 
-`pods.py` uses `~/.ssh/id_ed25519` to connect to rented GPU pods. The lium CLI
-also reads this path from its config.
+`pods.py` resolves the key in this order: `LIUM_SSH_KEY`, then whatever path
+the lium CLI recorded in `~/.lium/config.ini`, then `~/.ssh/id_ed25519`. No
+root-owned path is ever assumed.
 
 ## Step 6: Create a Bittensor wallet
 
@@ -178,8 +182,19 @@ deps, and the determinism check (generates the corpus twice and compares
 digests). If this passes, your environment is ready.
 
 **Note:** On machines with <4GB RAM, the determinism check may OOM on heavy
-generators (20+ families, 4096 length, 16384 series). Reduce `batch_size` in
-`config.json` or use a lighter generator for the check.
+generators (20+ families, 4096 length, 16384 series). Use the memory-bounded
+check instead while you iterate:
+
+```bash
+.venv/bin/python scripts/quick_verify.py ./generators/candidate --n-series 32
+# or, as part of setup:
+bash scripts/setup.sh --quick-verify
+```
+
+It checks determinism at a fixed seed, seed-sensitivity, and the dtype, shape
+and length contract over a tiny corpus. It does **not** run the static guard,
+the sandbox, or the packaging checks, and it never sees the real corpus size —
+run the full `cascade verify` on a larger host before submitting.
 
 ## Step 10: Run the controller once to verify
 
@@ -200,8 +215,9 @@ download the full eval pool — make sure step 8 completed.
 
 If you're not running as root (containers, agent sessions, shared machines):
 
-- `pods.py` uses `~/.ssh/id_ed25519` (not `/root/.ssh/`) — works for any user
-- `pods.py` falls back to `tar | ssh` when `rsync` is not installed
+- `pods.py` resolves the SSH key from `LIUM_SSH_KEY`, then `~/.lium/config.ini`,
+  then `~/.ssh/id_ed25519` — no root-owned path is assumed
+- `pods.py` transfers with `tar | ssh`; `rsync` is not required at either end
 - Set `CASCADE_DIR` env var to point at the cascade reference clone
 - The controller accepts `--cascade-dir` and `--chain-toml` flags
 - The GPU pods themselves run as root — the `/root/` paths in `pods.py`
@@ -219,9 +235,10 @@ multiple agent CLIs for the improve → verify → request-eval loop:
 | `claude` | `claude --print --permission-mode acceptEdits "<prompt>"` | Claude Code CLI installed |
 | `codex` | `codex exec --ephemeral --sandbox workspace-write -` | Codex CLI installed |
 | `custom` | `CASCADE_AGENT_COMMAND` template | Any non-interactive CLI |
+| `hermes-native` | none — a file handshake | Running inside an agent session |
 | `auto` | tries claude → codex → hermes | first found |
 
-Each backend spawns a fresh, non-interactive subagent that:
+Each CLI backend spawns a fresh, non-interactive subagent that:
 1. Reads `AGENTS.md`, `CLAUDE.md`, and `notes/` from the repo
 2. Inspects the controller event (round result, cascade update, etc.)
 3. Makes one bounded improvement to `generators/candidate/`
@@ -231,6 +248,52 @@ Each backend spawns a fresh, non-interactive subagent that:
 
 The subagent has no conversation context — everything it needs is in the repo
 files and the controller event.
+
+### hermes-native: running the controller inside an agent session
+
+An agent that *is* the session cannot invoke itself as a CLI, so there is no
+command to spawn. `CASCADE_AGENT=hermes-native` replaces the subprocess with a
+file handshake: the hook writes `runs/improve-request.json` and blocks until
+`runs/improve-response.json` answers with a matching request id.
+
+```bash
+python skills/cascade-miner/scripts/improve-request show
+# ... do the improvement pass ...
+python skills/cascade-miner/scripts/improve-request respond --status completed \
+    --detail "one line on what changed"
+```
+
+| Setting | Default | What it does |
+|---------|---------|-------------|
+| `CASCADE_IMPROVE_RESPONSE_TIMEOUT` | `3600` | How long the hook waits for a reply |
+| `CASCADE_IMPROVE_RESPONSE_POLL_SECONDS` | `5` | How often it checks for one |
+
+`completed` makes the pass succeed; `failed`, `rejected` and `skipped` fail it.
+No reply within the timeout exits 124 and leaves the request file in place for
+inspection. `auto` never selects `hermes-native` — a missing CLI is a broken
+install far more often than it is an agent session, and the handshake would
+otherwise block for an hour before anyone noticed.
+
+`skills/cascade-miner/SKILL.md` packages this and the operating rules for
+sessions that load skills.
+
+## Watching a GPU evaluation
+
+Remote training is launched under `nohup` with its exit status written to a
+marker file, then polled — a dropped SSH session costs one poll interval
+instead of the run. Each poll prints the last line of the remote training log
+when it changes, and an elapsed/GPU-utilisation heartbeat when it doesn't:
+
+```
+[candidate-seed0] launched; polling /tmp/cascade-eval-candidate-seed0.status
+[candidate-seed0] training -> /root/cascade-miner/ckpts/candidate__seed0
+[candidate-seed0] 10m elapsed, gpu 98 %, 21418 MiB
+[candidate-seed0] finished in 41.3m
+```
+
+Ten consecutive failed probes are treated as lost contact and abort the run;
+anything less is retried, because a dropped probe says nothing about training
+that is detached from the session.
 
 ## Quick reference: the eval loop
 
