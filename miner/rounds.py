@@ -5,8 +5,11 @@ reveal that decrypts `reveal_margin_blocks` BEFORE the boundary, and eligibility
 depends on the reveal landing strictly before it. Reveal timing jitters by a few
 blocks, so committing inside the margin risks missing the round entirely.
 
-Round cadence is contract-controlled and may change. Never hardcode it; read
-``epoch_blocks`` from the current ``chain.toml``.
+Round cadence is contract-controlled and may change. Never hardcode it, and
+never read the raw ``epoch_blocks`` key from ``chain.toml`` either: a scheduled
+cadence change is block-gated (``epoch_blocks_prev`` applies strictly before
+``epoch_activation_block``), so the round length must be resolved through
+``cascade.shared.config.effective_epoch_blocks`` at the current block.
 """
 
 from __future__ import annotations
@@ -58,8 +61,14 @@ class RoundClock:
 
 
 def from_chain(subtensor, chain_cfg) -> RoundClock:
+    from cascade.shared.config import effective_epoch_blocks
+
+    block = subtensor.get_current_block()
+    # The activation block of a scheduled cadence change is a boundary of BOTH
+    # grids, so resolving the length at the current block keeps `boundary`
+    # correct on either side of the seam.
     return RoundClock(
-        current_block=subtensor.get_current_block(),
-        epoch_blocks=int(chain_cfg.round.epoch_blocks),
+        current_block=block,
+        epoch_blocks=effective_epoch_blocks(chain_cfg.round, block),
         reveal_margin_blocks=int(getattr(chain_cfg.round, "reveal_margin_blocks", 25)),
     )
