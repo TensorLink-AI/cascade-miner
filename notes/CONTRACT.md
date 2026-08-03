@@ -127,17 +127,21 @@ overfitting a fixed local pool is exactly what the rotating eval punishes.
 
 ## Keeping this file in sync
 
-The competition moves under us; this file goes stale, not the subnet. To sync:
+The competition moves under us; this file goes stale, not the subnet.
+`bash scripts/sync.sh` automates the mechanical part: pull the reference
+clone, **reinstall** it into the venv (scoring imports come from the installed
+package — a pull without reinstall still scores with the old metric), report
+changes to `chain.toml` / `decisions/` / eval code, stamp the line below, and
+run the tests. `--check` only reports whether upstream moved (exit 1 when
+behind), so a cron can drive an alert.
 
-1. `git -C /root/cascade pull`, then reinstall the library into the venv
-   (`uv pip install --python <venv> '/root/cascade[train]'`) — scoring imports
-   come from the installed package, so a pull without reinstall still scores
-   with the old metric.
-2. Diff `chain.toml` and skim new `decisions/DEC-CA-*.md` since the last sync;
-   fold anything miner-facing into this file (cadence, budgets, dedup, metric).
-3. Re-score saved per-window components with the now-live metric (Rule 3 in
+What stays manual:
+
+1. Fold the reported miner-facing changes into this file (cadence, budgets,
+   dedup, metric).
+2. Re-score saved per-window components with the now-live metric (Rule 3 in
    `CLAUDE.md`) before comparing any number to a pre-sync one.
-4. Run `pytest tests/` here — `test_stale_references.py` is where hard-learned
-   staleness checks accumulate; add one when a sync catches something.
+3. `test_stale_references.py` is where hard-learned staleness checks
+   accumulate; add one when a sync catches something.
 
 Last synced: 2026-08-02, cascade `feaa2e8`.
