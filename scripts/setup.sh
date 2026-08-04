@@ -9,6 +9,11 @@
 #
 #   bash scripts/setup.sh --cascade-dir /path/to/cascade
 #
+# Exit status: 0 when nothing needs the operator, 1 when the summary lists
+# outstanding operator actions, 2 on usage errors. `--check` re-runs the same
+# readiness checks without installing or downloading anything, so scripts and
+# agents can gate on `bash scripts/setup.sh --check`.
+#
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +35,7 @@ QUICK_VERIFY_SERIES=32
 
 WITH_WALLET=0
 DRY_RUN=0
+CHECK_ONLY=0
 SKIP_VENV=0
 SKIP_LIUM=0
 SKIP_SSH_KEY=0
@@ -37,8 +43,11 @@ SKIP_POOL=0
 SKIP_SEED=0
 SKIP_VERIFY=0
 
+ENV_FILE="${CASCADE_ENV_FILE:-$ROOT/.env}"
+
 READY=()
 ACTIONS=()
+NOTES=()
 
 usage() {
     cat <<'EOF'
@@ -74,8 +83,14 @@ Options:
   --quick-verify-series N series per run for --quick-verify (default: 32)
   --skip-venv, --skip-lium, --skip-ssh-key, --skip-pool, --skip-seed,
   --skip-verify           skip individual steps
+  --check                 verify the current state only: install nothing,
+                          download nothing, run nothing paid. Re-runnable at
+                          any time; the exit status says whether the host is
+                          ready (0) or still needs operator action (1).
   --dry-run               print what each step would run, change nothing
   -h, --help              show this help
+
+Exit status: 0 ready, 1 operator actions remain, 2 usage error.
 EOF
 }
 
@@ -96,6 +111,7 @@ while [ $# -gt 0 ]; do
         --skip-pool) SKIP_POOL=1; shift ;;
         --skip-seed) SKIP_SEED=1; shift ;;
         --skip-verify) SKIP_VERIFY=1; shift ;;
+        --check) CHECK_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -117,6 +133,40 @@ ready() {
     info "ok: $1"
 }
 action() { ACTIONS+=("$1"); info "needs action: $1"; }
+# Reminders that cannot be verified from this host (like on-chain registration)
+# are notes: printed in the summary, but they do not fail the exit status.
+note() { NOTES+=("$1"); info "note: $1"; }
+
+# Lint an env file for the classic `source .env` footgun: an unquoted value
+# containing a space makes bash execute the second word as a command. Also
+# flags required keys still holding their example.env placeholders.
+lint_env_file() {
+    local file="$1" line key value lineno=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        case "$line" in ''|'#'*) continue ;; esac
+        line="${line#export }"
+        key="${line%%=*}"
+        value="${line#*=}"
+        [ "$key" = "$line" ] && continue
+        case "$key" in *[!A-Za-z0-9_]*) continue ;; esac
+        case "$value" in
+            '"'*|"'"*) ;;   # quoted: safe under source
+            *)
+                # Trailing comments are harmless; whitespace inside the value is not.
+                value="${value%%[[:space:]]#*}"
+                case "$value" in *[[:space:]]*)
+                    action "$file line $lineno: unquoted value with a space in $key — quote it, or \`source .env\` executes the second word as a command"
+                esac ;;
+        esac
+        case "$key" in
+            HF_TOKEN|HIPPIUS_HUB_TOKEN|LIUM_API_KEY|CASCADE_MINER_HOTKEY)
+                case "$value" in *replace_me*|''|'""'|"''")
+                    action "$file line $lineno: $key is still a placeholder; fill in a real value"
+                esac ;;
+        esac
+    done < "$file"
+}
 
 # Run a command, or print it under --dry-run. Callers check the status.
 attempt() {
@@ -147,6 +197,7 @@ info "repository:   $ROOT"
 info "cascade dir:  $CASCADE_DIR"
 info "venv:         $VENV"
 [ "$DRY_RUN" = 1 ] && info "dry run: no changes will be made"
+[ "$CHECK_ONLY" = 1 ] && info "check only: verifying current state, changing nothing"
 if [ -d "$CASCADE_DIR/.git" ]; then
     ready "Cascade reference checkout present ($CASCADE_DIR)"
 else
@@ -160,8 +211,12 @@ if [ -r /proc/meminfo ]; then
         info "available memory: ${MEM_MB:-unknown} MB"
     fi
 fi
-if [ -f "$ROOT/.env" ]; then
-    ready ".env present"
+if [ -f "$ENV_FILE" ]; then
+    BEFORE_LINT=${#ACTIONS[@]}
+    lint_env_file "$ENV_FILE"
+    if [ "${#ACTIONS[@]}" -eq "$BEFORE_LINT" ]; then
+        ready ".env present, quoted safely, no placeholders left"
+    fi
 else
     action "cp example.env .env and fill in HF_TOKEN, HIPPIUS_HUB_TOKEN, LIUM_API_KEY"
 fi
@@ -170,6 +225,12 @@ fi
 step "1/8 Python venv and Cascade install"
 if [ "$SKIP_VENV" = 1 ]; then
     info "skipped"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    if [ -x "$VENV_PY" ] && "$VENV_PY" -c 'import cascade, huggingface_hub' >/dev/null 2>&1; then
+        ready "venv at $VENV imports cascade and huggingface_hub"
+    else
+        action "no working venv at $VENV; run: bash scripts/setup.sh --cascade-dir $CASCADE_DIR"
+    fi
 elif [ ! -d "$CASCADE_DIR" ] && [ "$DRY_RUN" = 0 ]; then
     action "cannot install Cascade: $CASCADE_DIR does not exist"
 else
@@ -205,6 +266,8 @@ if [ "$SKIP_LIUM" = 1 ]; then
     info "skipped"
 elif command -v lium >/dev/null 2>&1; then
     ready "lium on PATH ($(command -v lium))"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    action "lium CLI not on PATH; install with: curl -fsSL https://lium.io/install.sh | bash"
 else
     attempt_quiet bash -c 'curl -fsSL https://lium.io/install.sh | bash'
     if command -v lium >/dev/null 2>&1; then
@@ -220,6 +283,8 @@ if [ "$SKIP_SSH_KEY" = 1 ]; then
     info "skipped"
 elif [ -f "$SSH_KEY" ]; then
     ready "SSH key present ($SSH_KEY)"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    action "no SSH key at $SSH_KEY; generate one (ssh-keygen -t ed25519) and register it with Lium"
 else
     attempt mkdir -p "$(dirname "$SSH_KEY")"
     if attempt_quiet ssh-keygen -t ed25519 -N '' -C "cascade-miner" -f "$SSH_KEY"; then
@@ -246,7 +311,9 @@ elif [ -n "$WALLET_NAME" ]; then
 else
     action "pass --wallet-name to check a wallet, and keep wallet files outside this repository"
 fi
-if [ "$WITH_WALLET" = 1 ]; then
+if [ "$WITH_WALLET" = 1 ] && [ "$CHECK_ONLY" = 1 ]; then
+    info "--check: skipping the create-hotkey wrapper (it would change wallet state)"
+elif [ "$WITH_WALLET" = 1 ]; then
     CREATE_CMD="${CASCADE_CREATE_HOTKEY_COMMAND:-$ROOT/ops/create-next-hotkey}"
     info "delegating wallet creation to: $CREATE_CMD"
     if attempt bash -c "$CREATE_CMD"; then
@@ -255,11 +322,19 @@ if [ "$WITH_WALLET" = 1 ]; then
         action "$CREATE_CMD refused or failed; implement a reviewed, non-interactive wrapper before enabling create_hotkey"
     fi
 fi
-action "registration burns TAO and stays manual: btcli subnets register --netuid 91 --network finney (or your reviewed ops/register-next-hotkey)"
+# Registration cannot be verified from this host, so it is a note, not a
+# failed check: it burns TAO (~the current registration cost) and stays manual.
+note "registration burns TAO and stays manual: btcli subnets register --netuid 91 --network finney (or your reviewed ops/register-next-hotkey)"
 
 step "5/8 eval-pool snapshot ($POOL_SNAPSHOT)"
 if [ "$SKIP_POOL" = 1 ]; then
     info "skipped"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    if [ -n "$(ls -A "$ROOT/pools/snapshots" 2>/dev/null)" ]; then
+        ready "eval-pool snapshots present under pools/snapshots"
+    else
+        action "no eval-pool snapshots; sync with: $VENV_PY -m miner.controller --sync-pool"
+    fi
 elif [ ! -x "$VENV_PY" ] && [ "$DRY_RUN" = 0 ]; then
     action "eval-pool sync needs the venv from step 1"
 else
@@ -274,6 +349,12 @@ fi
 step "6/8 controller state"
 if [ "$SKIP_SEED" = 1 ]; then
     info "skipped"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    if grep -qs '"initialized": *true' "$ROOT/runs/controller-state.json"; then
+        ready "controller state seeded in runs/controller-state.json"
+    else
+        action "controller state not seeded; run once: $VENV_PY -m miner.controller --once"
+    fi
 elif [ ! -x "$VENV_PY" ] && [ "$DRY_RUN" = 0 ]; then
     action "state seeding needs the venv from step 1"
 else
@@ -293,6 +374,10 @@ if [ "$SKIP_VERIFY" = 1 ]; then
     info "skipped"
 elif [ ! -f "$ROOT/$CANDIDATE/generator.py" ] && [ "$DRY_RUN" = 0 ]; then
     action "no candidate at $CANDIDATE"
+elif [ "$CHECK_ONLY" = 1 ]; then
+    # Presence only — `cascade verify` regenerates the corpus twice, which is
+    # exactly the cost --check promises not to pay.
+    ready "candidate present at $CANDIDATE (run \`cascade verify\` before submitting; --check does not)"
 elif [ "$QUICK_VERIFY" = 1 ]; then
     # Determinism and contract only, over a tiny corpus. Not a substitute for
     # `cascade verify`, which needs memory this host was told it lacks.
@@ -340,6 +425,10 @@ printf '\nready (%d):\n' "${#READY[@]}"
 for item in ${READY[@]+"${READY[@]}"}; do printf '  + %s\n' "$item"; done
 printf '\nneeds operator action (%d):\n' "${#ACTIONS[@]}"
 for item in ${ACTIONS[@]+"${ACTIONS[@]}"}; do printf '  - %s\n' "$item"; done
+if [ "${#NOTES[@]}" -gt 0 ]; then
+    printf '\nnotes (%d):\n' "${#NOTES[@]}"
+    for item in ${NOTES[@]+"${NOTES[@]}"}; do printf '  * %s\n' "$item"; done
+fi
 cat <<EOF
 
 Next: read notes/CONTRACT.md and notes/METHOD.md, then run one controller poll
@@ -347,8 +436,14 @@ Next: read notes/CONTRACT.md and notes/METHOD.md, then run one controller poll
   set -a; source .env; set +a
   $VENV_PY -m miner.controller --once
 
+Re-check readiness any time with: bash scripts/setup.sh --check
 Nothing above rents hardware, spends TAO, or submits on-chain. Paid evaluation
 runs only through an approved gpu_evaluation action; submission stays one-shot
 per hotkey and needs explicit human approval.
 EOF
+if [ "${#ACTIONS[@]}" -gt 0 ]; then
+    printf 'setup incomplete: %d operator action(s) remain (exit 1)\n' "${#ACTIONS[@]}"
+    exit 1
+fi
+printf 'all checks passed: this host is ready (exit 0)\n'
 exit 0

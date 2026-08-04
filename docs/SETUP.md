@@ -72,7 +72,9 @@ Optional but recommended:
 CASCADE_APPROVED_EVAL_COMMAND=".venv/bin/python scripts/run-gpu-evaluation"
 ```
 An unquoted value with a space causes bash to execute the second word as a
-command during `source .env`.
+command during `source .env`. `bash scripts/setup.sh --check` lints `.env`
+for exactly this (and for leftover `replace_me` placeholders) before anything
+sources it.
 
 `.env` is gitignored. Never commit real credentials.
 
@@ -210,6 +212,21 @@ export PATH="$HOME/.lium/bin:$PATH"
 This should fetch the latest round receipt, read the chain config, and write
 state to `runs/controller-state.json`. If it hangs, it's likely trying to
 download the full eval pool — make sure step 8 completed.
+
+## Step 11: Re-check readiness any time
+
+Two read-only commands report where you are between a fresh clone and a
+submittable miner, and both exit 0 only when the host is ready:
+
+```bash
+bash scripts/setup.sh --check          # the setup steps, verified in place
+.venv/bin/python -m miner.status --doctor   # the full checklist with a fix command per stage
+```
+
+The doctor is offline and instant — it never touches the network, the chain,
+or anything paid — so on-chain facts (registration, balance) appear as notes,
+not checks. Its `next:` line always names the single command to run first;
+`--json` emits the same report for scripts and agents.
 
 ## Non-root / container environments
 

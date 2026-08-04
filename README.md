@@ -47,7 +47,15 @@ state, `cascade verify` — and prints what is ready and what still needs you:
 ```bash
 bash scripts/setup.sh --cascade-dir /path/to/cascade
 bash scripts/setup.sh --cascade-dir /path/to/cascade --dry-run   # print the plan
+bash scripts/setup.sh --check                                    # verify only, change nothing
 ```
+
+The exit status is meaningful: 0 when nothing needs the operator, 1 while the
+summary lists outstanding actions, so scripts and agents can gate on it.
+`--check` re-runs the same readiness checks without installing or downloading
+anything. Preflight also lints `.env` — an unquoted value containing a space
+would make `source .env` execute the second word as a command, and leftover
+`replace_me` placeholders are flagged before they fail a run later.
 
 Every step is idempotent: an existing venv, SSH key, or eval-pool snapshot is
 left alone. `--skip-venv`, `--skip-lium`, `--skip-ssh-key`, `--skip-pool`,
@@ -422,6 +430,13 @@ timelocked until reveal; that is the subnet's design.
 `python -m miner.status [--json]` prints the same one-look summary for humans
 and scripts: round, king ref, eval pool, candidate digest, pending approvals,
 and the experiment ledger tail.
+
+`python -m miner.status --doctor [--json]` runs the onboarding checklist
+instead: every stage between a fresh clone and a submittable miner —
+environment, credentials, cascade checkout, Lium, SSH key, eval pool,
+controller state, candidate, wallet — each with the exact command that fixes
+it. It is read-only and offline, exits 1 until the host is ready, and `next:`
+always names the single command to run first.
 
 `python -m miner.experiments log|list` maintains `runs/experiments.jsonl`, the
 structured twin of `notes/EXPERIMENTS.md`: hypothesis, the one change per arm,
