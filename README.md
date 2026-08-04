@@ -146,7 +146,8 @@ paths, chosen by who is in charge:
 **Your agent drives (MCP).** The server is dependency-free stdio JSON-RPC —
 point any MCP client at the command below. Tools cover status, receipts, heat
 entrants, free verification, public-generator fetches, the experiment ledger,
-and `request_action` (which queues an approval, never executes). See
+the issue tracker (bug reports and feature requests about the harness), and
+`request_action` (which queues an approval, never executes). See
 *Agent-native interfaces* below for the full list.
 
 ```bash
@@ -506,8 +507,11 @@ The server is stdio JSON-RPC with no extra dependencies. Its tools are reads
 (`run_quick_verify`), free public-artefact fetches (`fetch_generator` — the
 king, a past heat entrant, a dethroned king, into a guarded `generators/`
 directory), the structured experiment ledger (`log_experiment`,
-`list_experiments`), the hermes-native handshake (`get_improve_request`,
-`respond_improve_request`), and `request_action` — which queues a durable
+`list_experiments`), the issue tracker (`report_issue`, `list_issues` —
+bugs and feature requests about the harness, appended to `runs/issues.jsonl`
+and shown to the operator in `miner_status`), the hermes-native handshake
+(`get_improve_request`, `respond_improve_request`), and `request_action` —
+which queues a durable
 approval request and never executes anything. The privilege boundary is
 identical to every other agent path: no wallet secrets, no spending, no
 chain writes.
@@ -520,7 +524,7 @@ timelocked until reveal; that is the subnet's design.
 
 `python -m miner.status [--json]` prints the same one-look summary for humans
 and scripts: round, king ref, eval pool, candidate digest, pending approvals,
-and the experiment ledger tail.
+open issues, and the experiment ledger tail.
 
 `python -m miner.status --doctor [--json]` runs the onboarding checklist
 instead: every stage between a fresh clone and a submittable miner —

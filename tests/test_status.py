@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from miner import experiments, status
+from miner import experiments, issues, status
 
 
 def seed_runs(root: Path) -> None:
@@ -68,6 +68,22 @@ class StatusTests(TestCase):
         self.assertFalse(summary["initialized"])
         self.assertIn("(none)", text)
         self.assertIn("none pending", text)
+
+    def test_open_issues_are_summarized_and_rendered(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed_runs(root)
+            triaged = issues.report_entry(root, kind="bug", title="already fixed")
+            issues.report_entry(root, kind="bug", title="already fixed",
+                                status="resolved", supersedes=triaged["id"])
+            live = issues.report_entry(root, kind="feature",
+                                       title="agents want a pool-sync tool")
+            summary = status.summarize(root)
+            text = status.render(summary)
+        self.assertEqual([e["id"] for e in summary["open_issues"]], [live["id"]])
+        self.assertIn("1 open", text)
+        self.assertIn("agents want a pool-sync tool", text)
+        self.assertNotIn("already fixed", text)
 
     def test_render_shows_pending_approvals_with_the_approve_command(self):
         with TemporaryDirectory() as directory:

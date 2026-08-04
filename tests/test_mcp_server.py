@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from miner import mcp_server
+from miner import issues, mcp_server
 from miner.controller import read_json
 from scripts.improve_candidate import TERMINAL_STATUSES
 
@@ -66,7 +66,8 @@ class ProtocolTests(ServerHarness):
             "miner_status", "get_state", "get_latest_receipt",
             "list_heat_entrants", "fetch_generator",
             "list_approvals", "request_action", "get_policy",
-            "log_experiment", "list_experiments", "run_quick_verify",
+            "log_experiment", "list_experiments",
+            "report_issue", "list_issues", "run_quick_verify",
             "get_improve_request", "respond_improve_request", "get_brief",
         })
 
@@ -156,6 +157,47 @@ class LedgerToolTests(ServerHarness):
     def test_bad_status_is_a_tool_error(self):
         result = self.call("log_experiment",
                            {"hypothesis": "x", "status": "amazing"})
+        self.assertTrue(result["isError"])
+
+
+class IssueToolTests(ServerHarness):
+    def test_report_then_list_issues(self):
+        filed = self.payload(self.call("report_issue", {
+            "kind": "bug",
+            "title": "status crashes without a candidate dir",
+            "detail": "rm -r generators/candidate; python -m miner.status",
+            "area": "miner/status.py",
+        }))
+        self.assertEqual(filed["entry"]["status"], "open")
+        self.assertIn(filed["entry"]["id"], filed["note"])
+        listed = self.payload(self.call("list_issues", {}))
+        self.assertEqual(listed, [filed["entry"]])
+
+    def test_open_only_applies_triage(self):
+        filed = self.payload(self.call("report_issue", {
+            "kind": "feature", "title": "expose pool sync as a tool"}))
+        issues.report_entry(
+            self.root, kind="feature", title="expose pool sync as a tool",
+            status="resolved", supersedes=filed["entry"]["id"])
+        self.assertEqual(
+            self.payload(self.call("list_issues", {"open_only": True})), [])
+        self.assertEqual(
+            len(self.payload(self.call("list_issues", {}))), 2)
+
+    def test_open_issues_reach_miner_status(self):
+        self.payload(self.call("report_issue", {
+            "kind": "bug", "title": "visible to the operator"}))
+        summary = self.payload(self.call("miner_status"))
+        self.assertEqual(summary["open_issues"][0]["title"],
+                         "visible to the operator")
+
+    def test_missing_title_is_a_tool_error(self):
+        result = self.call("report_issue", {"kind": "bug", "title": "  "})
+        self.assertTrue(result["isError"])
+        self.assertIn("title", result["content"][0]["text"])
+
+    def test_unknown_kind_is_a_tool_error(self):
+        result = self.call("report_issue", {"kind": "rant", "title": "x"})
         self.assertTrue(result["isError"])
 
 
