@@ -129,6 +129,67 @@ Mirror the eval pool without starting the controller loop:
 .venv/bin/python -m miner.controller --sync-pool --eval-pool-snapshot all
 ```
 
+## Operating with your agent
+
+The harness is agent-neutral: Hermes, Claude Code, Codex, or any
+non-interactive CLI or MCP client can run the whole mining loop. `AGENTS.md`
+is the operating brief every backend reads; `skills/cascade-miner/SKILL.md`
+packages the same rules for sessions that load skills. Three integration
+paths, chosen by who is in charge:
+
+| Who drives | Path | Start with |
+|------------|------|------------|
+| Your agent, interactively | MCP server | `.venv/bin/python -m miner.mcp_server` (stdio) |
+| The controller, per round event | improvement hook | `CASCADE_AGENT=hermes` (or `claude`, `codex`, `custom`) |
+| The controller, *inside* an agent session | file handshake | `CASCADE_AGENT=hermes-native` |
+
+**Your agent drives (MCP).** The server is dependency-free stdio JSON-RPC —
+point any MCP client at the command below. Tools cover status, receipts, heat
+entrants, free verification, public-generator fetches, the experiment ledger,
+and `request_action` (which queues an approval, never executes). See
+*Agent-native interfaces* below for the full list.
+
+```bash
+claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
+# any other MCP client: launch `.venv/bin/python -m miner.mcp_server` as a stdio server
+```
+
+**The controller drives (improvement hook).** The controller watches Cascade
+updates, pool rotations, and round receipts, and invokes
+`scripts/improve_candidate.py` once per event batch. That hook spawns your
+agent non-interactively — `CASCADE_AGENT=hermes` runs
+`hermes chat --toolsets terminal`, `claude`/`codex` use those CLIs, `custom`
+takes any command template via `CASCADE_AGENT_COMMAND`, and `auto` picks the
+first CLI found. The subagent gets no conversation context: everything it
+needs is in `AGENTS.md`, `CLAUDE.md`, `notes/`, and the controller event.
+
+```bash
+set -a; source .env; set +a
+CASCADE_AGENT=hermes .venv/bin/python -m miner.controller --mode human --interval 300 \
+  --improve-command ".venv/bin/python scripts/improve_candidate.py"
+```
+
+**Inside an agent session (hermes-native).** An agent that *is* the session
+has no CLI to invoke itself with, so the hook swaps the subprocess for a file
+handshake: it publishes `runs/improve-request.json` and blocks until the
+session answers. See *Continuous controller* below for the show/respond
+commands.
+
+Agents can self-serve setup and gate on readiness — both commands are
+read-only and exit 0 only when the host is ready:
+
+```bash
+bash scripts/setup.sh --check
+.venv/bin/python -m miner.status --doctor --json
+```
+
+Whichever path is used, the privilege boundary is identical: an agent may
+edit `generators/candidate`, verify, analyze, and log experiments, and may
+*request* `gpu_evaluation`, `create_hotkey`, `register_hotkey`, or
+`submit_candidate` — but the controller's mode/policy gate decides whether
+anything paid or on-chain actually runs. Agents never hold wallet secrets,
+never rent pods directly, and never commit or push.
+
 ## The loop
 
 The latest controller receipt identifies the reigning king by immutable
