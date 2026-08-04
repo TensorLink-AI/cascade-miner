@@ -14,10 +14,14 @@ SCRIPT = ROOT / "scripts/setup.sh"
 
 
 class SetupScriptTests(TestCase):
-    def run_setup(self, *args: str, home: str | None = None) -> subprocess.CompletedProcess:
+    def run_setup(self, *args: str, home: str | None = None,
+                  env_file: str | None = None) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env.pop("CASCADE_DIR", None)
         env.pop("CASCADE_WALLET_NAME", None)
+        # Point at a non-existent env file by default so a developer's real
+        # .env cannot change what these offline tests observe.
+        env["CASCADE_ENV_FILE"] = env_file or "/nonexistent/.env"
         if home is not None:
             env["HOME"] = home
         return subprocess.run(
@@ -49,7 +53,9 @@ class SetupScriptTests(TestCase):
                 "--dry-run", "--cascade-dir", f"{home}/cascade",
                 "--venv", f"{home}/venv", home=home,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            # Operator actions remain (no cascade checkout, no .env), and the
+            # exit status now says so.
+            self.assertEqual(result.returncode, 1, result.stderr)
             self.assertFalse(Path(home, "venv").exists())
             self.assertFalse(Path(home, ".ssh/id_ed25519").exists())
         for fragment in ("uv venv --python 3.11", "uv pip install",
@@ -76,7 +82,7 @@ class SetupScriptTests(TestCase):
                 "--skip-venv", "--skip-lium", "--skip-ssh-key", "--skip-pool",
                 "--skip-seed", "--skip-verify", home=home,
             )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(result.stdout.count("skipped"), 6)
         self.assertNotIn("would run:", result.stdout)
         for fragment in ("uv pip install", "ssh-keygen", "--sync-pool",
@@ -96,7 +102,7 @@ class SetupScriptTests(TestCase):
                 "--skip-pool", "--skip-seed", "--skip-verify",
                 "--cascade-dir", f"{home}/cascade", home=home,
             )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("ops/create-next-hotkey", result.stdout)
         # The shipped wrapper is a refusing stub, so this must be reported as
         # outstanding operator work rather than silently swallowed.
@@ -106,3 +112,61 @@ class SetupScriptTests(TestCase):
     def test_readme_documents_the_setup_entry_point(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("bash scripts/setup.sh --cascade-dir", readme)
+
+    def test_check_mode_verifies_without_installing_or_downloading(self):
+        with TemporaryDirectory() as home:
+            result = self.run_setup(
+                "--check", "--cascade-dir", f"{home}/cascade",
+                "--venv", f"{home}/venv", home=home,
+            )
+            self.assertFalse(Path(home, "venv").exists())
+            self.assertFalse(Path(home, ".ssh/id_ed25519").exists())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("check only", result.stdout)
+        # Nothing mutating may appear, not even as a plan.
+        for fragment in ("would run:", "uv pip install", "ssh-keygen -t ed25519 -N",
+                         "--sync-pool --root"):
+            self.assertNotIn(fragment, result.stdout)
+
+    def test_check_mode_never_runs_the_wallet_wrapper(self):
+        with TemporaryDirectory() as home:
+            result = self.run_setup(
+                "--check", "--with-wallet",
+                "--cascade-dir", f"{home}/cascade", home=home,
+            )
+        self.assertIn("skipping the create-hotkey wrapper", result.stdout)
+        self.assertNotIn("refused or failed", result.stdout)
+
+    def test_env_lint_flags_unquoted_spaces_and_placeholders(self):
+        with TemporaryDirectory() as home:
+            env_file = Path(home, ".env")
+            env_file.write_text(
+                "HF_TOKEN=hf_replace_me\n"
+                'SAFE="a b"\n'
+                "DANGEROUS=a b\n"
+                "TRAILING=plain # comment\n"
+                "# COMMENTED=x y z\n",
+                encoding="utf-8",
+            )
+            result = self.run_setup(
+                "--check", "--cascade-dir", f"{home}/cascade",
+                home=home, env_file=str(env_file),
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("HF_TOKEN is still a placeholder", result.stdout)
+        self.assertIn("unquoted value with a space in DANGEROUS", result.stdout)
+        self.assertNotIn("SAFE", result.stdout)
+        self.assertNotIn("TRAILING", result.stdout)
+        self.assertNotIn("COMMENTED", result.stdout)
+
+    def test_exit_status_is_zero_only_when_nothing_needs_the_operator(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("setup incomplete", source)
+        # The registration reminder must be a note, not an action, or the
+        # script could never exit 0.
+        self.assertIn("note \"registration burns TAO", source)
+        with TemporaryDirectory() as home:
+            result = self.run_setup("--check", "--cascade-dir", f"{home}/cascade",
+                                    home=home)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("operator action(s) remain", result.stdout)

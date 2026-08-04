@@ -370,29 +370,78 @@ class CycleTests(TestCase):
             self.assertEqual(sync.call_args.args[4], "pool-0")
             self.assertEqual(sync.call_args.kwargs["snapshot"], "all")
 
-    def test_autonomous_mode_invokes_hook_at_most_once_per_cycle(self):
+    def _seeded_autonomous(self, root: Path, **overrides) -> Controller:
+        values = {"improve_command": "agent", "mode": "autonomous",
+                  "max_improvements_per_round": 3,
+                  "approved_eval_command": "evaluate"}
+        values.update(overrides)
+        instance = make_controller(root, **values)
+        instance.state_file.parent.mkdir(parents=True)
+        instance.state_file.write_text(json.dumps({
+            "initialized": True,
+            "cascade_head": "head-1",
+            "chain": {"digest": "chain-1", "values": {}},
+            "eval_pool_revision": "pool-1",
+            "last_round_id": "round-1",
+        }))
+        (instance.eval_pool_dir / "snapshots").mkdir(parents=True)
+        return instance
+
+    def test_autonomous_mode_chains_passes_up_to_the_round_cap(self):
+        """--max-improvements-per-round is a real contract: a successful
+        evaluation starts the next improvement pass in the same poll."""
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            instance = make_controller(
-                root, improve_command="agent", mode="autonomous",
-                max_improvements_per_round=3,
-            )
-            instance.state_file.parent.mkdir(parents=True)
-            instance.state_file.write_text(json.dumps({
-                "initialized": True,
-                "cascade_head": "head-1",
-                "chain": {"digest": "chain-1", "values": {}},
-                "eval_pool_revision": "pool-1",
-                "last_round_id": "round-1",
-            }))
-            (instance.eval_pool_dir / "snapshots").mkdir(parents=True)
+            instance = self._seeded_autonomous(root)
             patches = self._cycle_patches(round_id="round-2")
             hook_result = {"exit_code": 0, "stdout": "", "stderr": ""}
             with patches[0], patches[1], patches[2], patches[3], \
                     patch.object(controller, "candidate_dirty", return_value=True), \
                     patch.object(controller, "run_hook", return_value=hook_result) as hook:
                 instance.cycle()
+            # Three improve passes, each followed by its evaluation.
+            commands = [call.args[0] for call in hook.call_args_list]
+            self.assertEqual(commands,
+                             ["agent", "evaluate"] * 3)
+            state = read_json(instance.state_file)
+            self.assertEqual(state["improvement_passes"]["round-2"], 3)
+
+    def test_a_failed_evaluation_stops_the_chain(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            instance = self._seeded_autonomous(root)
+            patches = self._cycle_patches(round_id="round-2")
+            results = iter([
+                {"exit_code": 0, "stdout": "", "stderr": ""},   # improve 1
+                {"exit_code": 1, "stdout": "", "stderr": "oom"},  # eval 1 fails
+            ])
+            with patches[0], patches[1], patches[2], patches[3], \
+                    patch.object(controller, "candidate_dirty", return_value=True), \
+                    patch.object(controller, "run_hook",
+                                 side_effect=lambda *a, **k: next(results)) as hook:
+                instance.cycle()
+            self.assertEqual(hook.call_count, 2)
+            state = read_json(instance.state_file)
+            self.assertEqual(state["improvement_passes"]["round-2"], 1)
+
+    def test_human_mode_still_stops_at_the_first_approval(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            instance = self._seeded_autonomous(root, mode="human")
+            patches = self._cycle_patches(round_id="round-2")
+            hook_result = {"exit_code": 0, "stdout": "", "stderr": ""}
+            # Checked three times: the pending-review guard, the loop entry
+            # condition, and the post-improvement "did the pass change
+            # anything" probe. Only the last sees the new candidate.
+            dirty = patch.object(controller, "candidate_dirty",
+                                 side_effect=[False, False, True])
+            with patches[0], patches[1], patches[2], patches[3], dirty, \
+                    patch.object(controller, "run_hook", return_value=hook_result) as hook:
+                instance.cycle()
+            # One improvement pass, then the evaluation queues for approval.
             self.assertEqual(hook.call_count, 1)
+            approvals = read_json(instance.approvals_file)["requests"]
+            self.assertEqual([r["action"] for r in approvals], ["gpu_evaluation"])
 
 class SyncPoolCommandTests(TestCase):
     def test_sync_pool_records_the_revision_without_needing_cascade(self):

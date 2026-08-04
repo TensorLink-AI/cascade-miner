@@ -47,7 +47,15 @@ state, `cascade verify` — and prints what is ready and what still needs you:
 ```bash
 bash scripts/setup.sh --cascade-dir /path/to/cascade
 bash scripts/setup.sh --cascade-dir /path/to/cascade --dry-run   # print the plan
+bash scripts/setup.sh --check                                    # verify only, change nothing
 ```
+
+The exit status is meaningful: 0 when nothing needs the operator, 1 while the
+summary lists outstanding actions, so scripts and agents can gate on it.
+`--check` re-runs the same readiness checks without installing or downloading
+anything. Preflight also lints `.env` — an unquoted value containing a space
+would make `source .env` execute the second word as a command, and leftover
+`replace_me` placeholders are flagged before they fail a run later.
 
 Every step is idempotent: an existing venv, SSH key, or eval-pool snapshot is
 left alone. `--skip-venv`, `--skip-lium`, `--skip-ssh-key`, `--skip-pool`,
@@ -120,6 +128,67 @@ Mirror the eval pool without starting the controller loop:
 .venv/bin/python -m miner.controller --sync-pool                      # newest snapshot
 .venv/bin/python -m miner.controller --sync-pool --eval-pool-snapshot all
 ```
+
+## Operating with your agent
+
+The harness is agent-neutral: Hermes, Claude Code, Codex, or any
+non-interactive CLI or MCP client can run the whole mining loop. `AGENTS.md`
+is the operating brief every backend reads; `skills/cascade-miner/SKILL.md`
+packages the same rules for sessions that load skills. Three integration
+paths, chosen by who is in charge:
+
+| Who drives | Path | Start with |
+|------------|------|------------|
+| Your agent, interactively | MCP server | `.venv/bin/python -m miner.mcp_server` (stdio) |
+| The controller, per round event | improvement hook | `CASCADE_AGENT=hermes` (or `claude`, `codex`, `custom`) |
+| The controller, *inside* an agent session | file handshake | `CASCADE_AGENT=hermes-native` |
+
+**Your agent drives (MCP).** The server is dependency-free stdio JSON-RPC —
+point any MCP client at the command below. Tools cover status, receipts, heat
+entrants, free verification, public-generator fetches, the experiment ledger,
+and `request_action` (which queues an approval, never executes). See
+*Agent-native interfaces* below for the full list.
+
+```bash
+claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
+# any other MCP client: launch `.venv/bin/python -m miner.mcp_server` as a stdio server
+```
+
+**The controller drives (improvement hook).** The controller watches Cascade
+updates, pool rotations, and round receipts, and invokes
+`scripts/improve_candidate.py` once per event batch. That hook spawns your
+agent non-interactively — `CASCADE_AGENT=hermes` runs
+`hermes chat --toolsets terminal`, `claude`/`codex` use those CLIs, `custom`
+takes any command template via `CASCADE_AGENT_COMMAND`, and `auto` picks the
+first CLI found. The subagent gets no conversation context: everything it
+needs is in `AGENTS.md`, `CLAUDE.md`, `notes/`, and the controller event.
+
+```bash
+set -a; source .env; set +a
+CASCADE_AGENT=hermes .venv/bin/python -m miner.controller --mode human --interval 300 \
+  --improve-command ".venv/bin/python scripts/improve_candidate.py"
+```
+
+**Inside an agent session (hermes-native).** An agent that *is* the session
+has no CLI to invoke itself with, so the hook swaps the subprocess for a file
+handshake: it publishes `runs/improve-request.json` and blocks until the
+session answers. See *Continuous controller* below for the show/respond
+commands.
+
+Agents can self-serve setup and gate on readiness — both commands are
+read-only and exit 0 only when the host is ready:
+
+```bash
+bash scripts/setup.sh --check
+.venv/bin/python -m miner.status --doctor --json
+```
+
+Whichever path is used, the privilege boundary is identical: an agent may
+edit `generators/candidate`, verify, analyze, and log experiments, and may
+*request* `gpu_evaluation`, `create_hotkey`, `register_hotkey`, or
+`submit_candidate` — but the controller's mode/policy gate decides whether
+anything paid or on-chain actually runs. Agents never hold wallet secrets,
+never rent pods directly, and never commit or push.
 
 ## The loop
 
@@ -254,7 +323,11 @@ The controller has two explicit modes:
   `--approve`.
 - `autonomous` runs explicitly allowlisted action commands without asking and
   can perform multiple bounded improvement/evaluation passes. Set
-  `--max-improvements-per-round` to the maximum passes per round.
+  `--max-improvements-per-round` to the maximum passes per round: after each
+  successful evaluation the controller immediately starts the next improvement
+  pass in the same poll, until the cap (or a policy limit) stops it. Human
+  mode instead pauses at every approval, so its cadence is one pass per
+  approved request.
 
 Agents never receive wallet secrets or execute privileged commands directly.
 Human mode approves named actions individually. Autonomous mode can create and
@@ -297,6 +370,32 @@ For bounded autonomous evaluation:
   --autonomous-actions "gpu_evaluation" \
   --improve-command ".venv/bin/python scripts/improve_candidate.py"
 ```
+
+### Iterating several times in one round
+
+To let the miner try, say, five experiments inside a single ~12h round, run
+autonomous mode with the per-round cap raised:
+
+```bash
+.venv/bin/python -m miner.controller \
+  --mode autonomous \
+  --interval 300 \
+  --max-improvements-per-round 5 \
+  --approved-eval-command "./scripts/run-gpu-evaluation" \
+  --autonomous-actions "gpu_evaluation" \
+  --improve-command ".venv/bin/python scripts/improve_candidate.py"
+```
+
+Each pass is one bounded experiment: improve one thing, evaluate it paired
+against the king, read the result, then the next pass starts from what was
+learned (the agent sees the updated scores and experiment ledger). The chain
+stops early when a pass fails, when the agent stops requesting evaluation,
+or when a `policy.toml` cap declines the next evaluation — a declined action
+queues for approval instead of erroring, so a budget cap pauses the chain
+rather than killing the loop. Budget for it: five passes means up to five GPU
+evaluations per round, so set the `policy.toml` per-24h run/hour caps to what
+you are willing to spend. In human mode the same flag only sets an upper
+bound — each evaluation still waits for `--approve`, one pass at a time.
 
 The example paths above now all exist. The GPU command is operational and
 spends money only after the configured approval/allowlist gate. The `ops/`
@@ -422,6 +521,13 @@ timelocked until reveal; that is the subnet's design.
 `python -m miner.status [--json]` prints the same one-look summary for humans
 and scripts: round, king ref, eval pool, candidate digest, pending approvals,
 and the experiment ledger tail.
+
+`python -m miner.status --doctor [--json]` runs the onboarding checklist
+instead: every stage between a fresh clone and a submittable miner —
+environment, credentials, cascade checkout, Lium, SSH key, eval pool,
+controller state, candidate, wallet — each with the exact command that fixes
+it. It is read-only and offline, exits 1 until the host is ready, and `next:`
+always names the single command to run first.
 
 `python -m miner.experiments log|list` maintains `runs/experiments.jsonl`, the
 structured twin of `notes/EXPERIMENTS.md`: hypothesis, the one change per arm,

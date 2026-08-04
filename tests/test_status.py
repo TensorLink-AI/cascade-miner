@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from miner import experiments, status
 
@@ -75,3 +77,173 @@ class StatusTests(TestCase):
         self.assertIn("aaa111bbb222", text)
         self.assertIn("--approve <id>", text)
         self.assertIn("hippius://king/ref", text)
+
+
+class EnvFileTests(TestCase):
+    def parse(self, text: str):
+        with TemporaryDirectory() as directory:
+            path = Path(directory, ".env")
+            path.write_text(text, encoding="utf-8")
+            return status.parse_env_file(path)
+
+    def test_quoted_values_and_comments_are_safe(self):
+        values, problems = self.parse(
+            'SAFE="a b"\n'
+            "TRAILING=plain # comment\n"
+            "# COMMENTED=x y z\n"
+            "export EXPORTED=fine\n"
+        )
+        self.assertEqual(problems, [])
+        self.assertEqual(values["SAFE"], "a b")
+        self.assertEqual(values["TRAILING"], "plain")
+        self.assertEqual(values["EXPORTED"], "fine")
+        self.assertNotIn("COMMENTED", values)
+
+    def test_unquoted_space_is_reported_as_the_source_footgun(self):
+        values, problems = self.parse("DANGEROUS=a b\nOK=fine\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("DANGEROUS", problems[0])
+        self.assertIn("source .env", problems[0])
+        self.assertNotIn("DANGEROUS", values)
+        self.assertEqual(values["OK"], "fine")
+
+    def test_missing_file_is_empty_not_an_error(self):
+        values, problems = status.parse_env_file(Path("/nonexistent/.env"))
+        self.assertEqual((values, problems), ({}, []))
+
+
+def seed_ready_host(root: Path, home: Path) -> dict[str, str]:
+    """Build a filesystem where every doctor check passes, returning the env."""
+    candidate = root / "generators/candidate"
+    candidate.mkdir(parents=True)
+    for name in status.CANDIDATE_FILES:
+        (candidate / name).write_text("# stub\n", encoding="utf-8")
+    snapshot = root / "pools/snapshots/2026-07-16"
+    snapshot.mkdir(parents=True)
+    (snapshot / "data.json").write_text("{}", encoding="utf-8")
+    runs = root / "runs"
+    runs.mkdir()
+    (runs / "controller-state.json").write_text(
+        json.dumps({"initialized": True}), encoding="utf-8")
+    (root / ".env").write_text(
+        "HF_TOKEN=hf_real\nHIPPIUS_HUB_TOKEN=tok\nLIUM_API_KEY=key\n"
+        "CASCADE_MINER_HOTKEY=5Freal\n", encoding="utf-8")
+    cascade_dir = home / "cascade"
+    cascade_dir.mkdir(parents=True)
+    (cascade_dir / "chain.toml").write_text("netuid = 91\n", encoding="utf-8")
+    lium = home / ".lium/bin/lium"
+    lium.parent.mkdir(parents=True)
+    lium.write_text("#!/bin/sh\n", encoding="utf-8")
+    ssh_key = home / ".ssh/id_ed25519"
+    ssh_key.parent.mkdir()
+    ssh_key.write_text("key\n", encoding="utf-8")
+    wallet = home / "wallets/test-wallet"
+    (wallet / "hotkeys").mkdir(parents=True)
+    (wallet / "coldkeypub.txt").write_text("{}", encoding="utf-8")
+    (wallet / "hotkeys/default").write_text("{}", encoding="utf-8")
+    return {
+        "HOME": str(home),
+        "CASCADE_DIR": str(cascade_dir),
+        "LIUM_SSH_KEY": str(ssh_key),
+        "CASCADE_WALLET_NAME": "test-wallet",
+        "BT_WALLET_PATH": str(home / "wallets"),
+    }
+
+
+class DoctorTests(TestCase):
+    def test_fresh_host_fails_with_a_fix_for_every_stage(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            root.mkdir()
+            # CASCADE_DIR must point inside the sandbox: the default is
+            # /root/cascade, whose mere existence (or an unreadable /root)
+            # on the host would leak into the result.
+            env = {"HOME": str(Path(directory, "home")),
+                   "CASCADE_DIR": str(Path(directory, "nowhere/cascade"))}
+            with patch.dict(os.environ, env, clear=True):
+                report = status.doctor(root)
+        self.assertFalse(report["ready"])
+        by_name = {c["name"]: c for c in report["checks"]}
+        for name in ("credentials", "cascade checkout", "lium CLI", "SSH key",
+                     "eval pool", "controller state", "candidate", "wallet"):
+            self.assertFalse(by_name[name]["ok"], name)
+            self.assertTrue(by_name[name]["fix"], name)
+        # `next` is the first failing required fix, so the operator always
+        # has exactly one command to run.
+        first_failing = next(c for c in report["checks"]
+                             if not c["ok"] and c["required"])
+        self.assertEqual(report["next"], first_failing["fix"])
+
+    def test_ready_host_passes_and_exits_zero(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            home = Path(directory, "home")
+            root.mkdir()
+            env = seed_ready_host(root, home)
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(status, "_module_available", return_value=True):
+                report = status.doctor(root)
+                rendered = status.render_doctor(report)
+                exit_code = status.main(["--doctor", "--root", str(root)])
+        self.assertTrue(report["ready"], json.dumps(report, indent=2))
+        self.assertIsNone(report["next"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ready", rendered)
+        # Registration cannot be checked offline; the reminder must survive.
+        self.assertIn("one-shot per hotkey", rendered)
+
+    def test_pending_approvals_warn_but_do_not_block_readiness(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            home = Path(directory, "home")
+            root.mkdir()
+            env = seed_ready_host(root, home)
+            (root / "runs/approvals.json").write_text(json.dumps({"requests": [
+                {"id": "req1", "action": "gpu_evaluation", "status": "pending"},
+            ]}), encoding="utf-8")
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(status, "_module_available", return_value=True):
+                report = status.doctor(root)
+        self.assertTrue(report["ready"])
+        approvals = next(c for c in report["checks"] if c["name"] == "approvals")
+        self.assertFalse(approvals["ok"])
+        self.assertFalse(approvals["required"])
+        self.assertIn("req1", approvals["detail"])
+
+    def test_env_quoting_problem_fails_the_credentials_check(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            home = Path(directory, "home")
+            root.mkdir()
+            env = seed_ready_host(root, home)
+            (root / ".env").write_text(
+                "HF_TOKEN=hf_real\nBAD=a b\n", encoding="utf-8")
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(status, "_module_available", return_value=True):
+                report = status.doctor(root)
+        credentials = next(c for c in report["checks"]
+                           if c["name"] == "credentials")
+        self.assertFalse(credentials["ok"])
+        self.assertIn("BAD", credentials["detail"])
+
+    def test_unreadable_path_reads_as_absent_not_a_crash(self):
+        # On a non-root host /root/cascade can raise EACCES on stat, which
+        # pathlib does not swallow. The doctor must report the stage as not
+        # ready instead of crashing (seen on the CI runner).
+        class Denied:
+            def is_file(self):
+                raise PermissionError(13, "Permission denied")
+
+        self.assertFalse(status._is_file(Denied()))
+
+    def test_doctor_json_is_machine_readable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            root.mkdir()
+            env = {"HOME": str(Path(directory, "home")),
+                   "CASCADE_DIR": str(Path(directory, "nowhere/cascade"))}
+            with patch.dict(os.environ, env, clear=True):
+                report = status.doctor(root)
+        parsed = json.loads(json.dumps(report))
+        self.assertEqual({c["name"] for c in parsed["checks"]},
+                         {c["name"] for c in report["checks"]})

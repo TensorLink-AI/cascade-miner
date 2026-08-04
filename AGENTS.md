@@ -18,6 +18,14 @@ non-root environments, set it explicitly:
 export CASCADE_DIR=/path/to/cascade
 ```
 
+Before starting work, check what the host actually has — both commands are
+read-only and exit 0 only when every stage is ready:
+
+```bash
+bash scripts/setup.sh --check                     # setup steps, verified in place
+.venv/bin/python -m miner.status --doctor --json  # full checklist with a fix per stage
+```
+
 ## For automated improvement events
 
 - Work only in this repository and treat the Cascade reference clone as a

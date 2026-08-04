@@ -778,9 +778,16 @@ class Controller:
                 self.notify(evaluation_event)
                 if evaluation_event["result"]["exit_code"] != 0:
                     break
-                # Never invoke the improvement hook more than once in one poll.
-                # Further bounded passes require a later, newly detected event.
-                break
+                if action != "gpu_evaluation":
+                    # Hotkey and submission actions produce no new information
+                    # for another pass; further work waits for the next event.
+                    break
+                # A successful evaluation is new information: keep chaining
+                # improve -> evaluate passes up to --max-improvements-per-round.
+                # Only autonomous mode reaches this point (human mode queues an
+                # approval above and stops), and each further pass still goes
+                # through the same autonomy/policy gate before anything paid
+                # runs, so a policy cap pauses the chain mid-round.
 
         write_json(self.state_file, state)
         return events
