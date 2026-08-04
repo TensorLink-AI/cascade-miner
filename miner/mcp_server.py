@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from miner import experiments
+from miner import issues
 from miner import policy as policy_module
 from miner import status as status_module
 from miner.controller import queue_approval, read_json
@@ -116,7 +117,8 @@ class Server:
         self._tool(
             "miner_status",
             "One-look harness status: round, king ref, eval pool, candidate "
-            "digest, pending approvals, recent events, experiment ledger tail.",
+            "digest, pending approvals, open issues, recent events, "
+            "experiment ledger tail.",
             no_args, lambda args: status_module.summarize(self.root),
         )
         self._tool(
@@ -239,6 +241,43 @@ class Server:
             lambda args: experiments.list_entries(
                 self.root, status=str(args.get("status", "")),
                 limit=int(args.get("limit", 0) or 0)),
+        )
+        self._tool(
+            "report_issue",
+            "File a bug report or feature request about the harness itself "
+            "into the append-only issue ledger (runs/issues.jsonl). "
+            "Surfaced to the operator via miner_status; filing one never "
+            "executes anything. Not for experiment results — use "
+            "log_experiment for those.",
+            {
+                "properties": {
+                    "kind": {"type": "string", "enum": list(issues.KINDS)},
+                    "title": {"type": "string",
+                              "description": "One line naming the problem or "
+                                             "the missing capability."},
+                    "detail": {"type": "string",
+                               "description": "Reproduction steps for a bug; "
+                                              "motivation for a feature."},
+                    "area": {"type": "string",
+                             "description": "What it concerns, e.g. "
+                                            "miner/controller.py or docs."},
+                },
+                "required": ["kind", "title"],
+            },
+            self._report_issue,
+        )
+        self._tool(
+            "list_issues",
+            "Query the issue ledger: bugs and feature requests already filed, "
+            "so duplicates can be avoided. open_only applies triage "
+            "(supersedes) and keeps the live worklist.",
+            {"properties": {
+                "kind": {"type": "string", "enum": list(issues.KINDS)},
+                "status": {"type": "string", "enum": list(issues.STATUSES)},
+                "open_only": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1},
+            }},
+            self._list_issues,
         )
         self._tool(
             "run_quick_verify",
@@ -433,6 +472,35 @@ class Server:
             )
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
+
+    def _report_issue(self, args: dict[str, Any]) -> Any:
+        try:
+            entry = issues.report_entry(
+                self.root,
+                kind=str(args.get("kind", "")),
+                title=str(args.get("title", "")),
+                detail=str(args.get("detail", "")),
+                area=str(args.get("area", "")),
+            )
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "entry": entry,
+            "note": f"filed as [{entry['id']}]; the operator sees open issues "
+                    "in miner_status. Nothing executes from this.",
+        }
+
+    def _list_issues(self, args: dict[str, Any]) -> Any:
+        kind = str(args.get("kind", ""))
+        limit = int(args.get("limit", 0) or 0)
+        if args.get("open_only"):
+            entries = issues.open_entries(self.root)
+            if kind:
+                entries = [e for e in entries if e.get("kind") == kind]
+            return entries[-limit:] if limit > 0 else entries
+        return issues.list_entries(
+            self.root, kind=kind, status=str(args.get("status", "")),
+            limit=limit)
 
     def _run_quick_verify(self, args: dict[str, Any]) -> Any:
         candidate = _candidate_path(self.root, args.get("candidate_path"))

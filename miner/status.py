@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from miner import experiments
+from miner import issues
 from miner.controller import candidate_digest, candidate_dirty, read_json
 
 STATE_FILE = Path("runs/controller-state.json")
@@ -95,6 +96,7 @@ def summarize(root: Path) -> dict[str, Any]:
             },
         },
         "experiments": ledger,
+        "open_issues": issues.open_entries(root),
         "recent_events": tail_events(root / EVENTS_FILE),
     }
 
@@ -132,6 +134,13 @@ def render(summary: dict[str, Any]) -> str:
         for entry in entries:
             lines.append(f"  {entry.get('id')} {entry.get('status'):<9} "
                          f"{entry.get('hypothesis', '')}")
+    open_issues = summary["open_issues"]
+    if open_issues:
+        lines.append(f"issues:      {len(open_issues)} open")
+        for entry in open_issues:
+            lines.append(f"  {entry.get('id')} {entry.get('kind'):<8} "
+                         f"{entry.get('title', '')}")
+        lines.append("  triage with: .venv/bin/python -m miner.issues list --open")
     lines.append(f"updated at:  {summary['updated_at'] or '(controller has not run)'}")
     return "\n".join(lines)
 

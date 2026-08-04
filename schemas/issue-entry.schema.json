@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TensorLink-AI/cascade-miner/schemas/issue-entry.schema.json",
+  "title": "cascade-miner issue ledger entry",
+  "description": "One line of runs/issues.jsonl — a bug report or feature request filed by an agent (report_issue tool or `python -m miner.issues report`). Append-only and write-only for agents; filing one never executes anything. A triaging entry supersedes the original by id instead of rewriting it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "at", "kind", "title", "status"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "at": {"type": "string", "description": "UTC timestamp, ISO 8601."},
+    "kind": {"type": "string", "enum": ["bug", "feature"]},
+    "title": {"type": "string", "minLength": 1},
+    "detail": {
+      "type": "string",
+      "description": "Reproduction steps for a bug; motivation for a feature."
+    },
+    "area": {
+      "type": "string",
+      "description": "What the issue concerns, e.g. miner/controller.py or docs."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "resolved", "wontfix"],
+      "description": "Agents file open; resolved/wontfix are triage entries that supersede the original."
+    },
+    "supersedes": {
+      "type": "string",
+      "description": "Id of the entry this one triages (e.g. open -> resolved)."
+    }
+  }
+}

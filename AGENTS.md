@@ -59,10 +59,18 @@ free local checks, `list_heat_entrants` and `fetch_generator` to study public
 generators from completed rounds (past kings and heat entrants — never submit
 someone else's work), `log_experiment`/`list_experiments` for the structured
 ledger (`runs/experiments.jsonl` — record the narrative in
-`notes/EXPERIMENTS.md` as well), and `request_action` to queue a privileged
-action for approval. `request_action` and `runs/agent-request.json` are
-requests only — the controller applies its mode/policy gate before anything
-runs. File contracts are documented under `schemas/`.
+`notes/EXPERIMENTS.md` as well), `report_issue`/`list_issues` to file bugs and
+feature requests about the harness itself (`runs/issues.jsonl`, surfaced to
+the operator via `miner_status` — check `list_issues` first to avoid
+duplicates), and `request_action` to queue a privileged action for approval.
+`request_action` and `runs/agent-request.json` are requests only — the
+controller applies its mode/policy gate before anything runs. File contracts
+are documented under `schemas/`.
+
+Without MCP, the same issue tracker is
+`python -m miner.issues report --kind bug|feature --title "..." --detail "..."`.
+Use it for harness defects and missing capabilities, not experiment results —
+those belong in the experiment ledger.
 
 When a `policy.toml` exists, autonomous mode is bounded by per-action caps
 (runs and estimated hours per trailing 24h). A declined action queues for
