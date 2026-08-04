@@ -149,6 +149,21 @@ def _module_available(name: str) -> bool:
         return False
 
 
+def _is_file(path: Path) -> bool:
+    """True if the path is a readable regular file.
+
+    Doctor probes paths outside the repo (/root/cascade, ~/.bittensor, …).
+    On a non-root host those may sit behind directories we cannot stat, and
+    pathlib only swallows ENOENT-style errors — EACCES propagates. For a
+    readiness check, unreadable is indistinguishable from absent: report the
+    stage as not ready instead of crashing.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def parse_env_file(path: Path) -> tuple[dict[str, str], list[str]]:
     """Read KEY=value pairs from a .env file, collecting quoting problems.
 
@@ -224,7 +239,7 @@ def doctor(root: Path) -> dict[str, Any]:
               f"still placeholder or unset: {', '.join(missing)}",
               "edit .env and fill in: " + ", ".join(missing) if missing else None)
 
-    cascade_ok = (cascade_dir / "chain.toml").is_file()
+    cascade_ok = _is_file(cascade_dir / "chain.toml")
     check("cascade checkout", cascade_ok,
           f"read-only reference at {cascade_dir}" if cascade_ok
           else f"no chain.toml under {cascade_dir}",
@@ -233,21 +248,25 @@ def doctor(root: Path) -> dict[str, Any]:
 
     lium = shutil.which("lium") or (
         str(Path.home() / ".lium/bin/lium")
-        if (Path.home() / ".lium/bin/lium").exists() else None)
+        if _is_file(Path.home() / ".lium/bin/lium") else None)
     check("lium CLI", lium is not None,
           f"found at {lium}" if lium else "not on PATH",
           "curl -fsSL https://lium.io/install.sh | bash  "
           "(then add ~/.lium/bin to PATH)")
 
     ssh_key = _ssh_key_path()
-    check("SSH key", ssh_key.is_file(),
-          f"pod-access key at {ssh_key}" if ssh_key.is_file()
+    ssh_key_ok = _is_file(ssh_key)
+    check("SSH key", ssh_key_ok,
+          f"pod-access key at {ssh_key}" if ssh_key_ok
           else f"no pod-access key at {ssh_key}",
           f"ssh-keygen -t ed25519 -f {ssh_key} -N '' "
           "(and register the .pub with Lium)")
 
     snapshots = root / "pools/snapshots"
-    have_pool = snapshots.is_dir() and any(snapshots.iterdir())
+    try:
+        have_pool = snapshots.is_dir() and any(snapshots.iterdir())
+    except OSError:
+        have_pool = False
     check("eval pool", have_pool,
           "snapshot(s) present under pools/snapshots" if have_pool
           else "no local eval-pool snapshot",
@@ -261,7 +280,7 @@ def doctor(root: Path) -> dict[str, Any]:
           "set -a; source .env; set +a; .venv/bin/python -m miner.controller --once")
 
     candidate_dir = root / "generators/candidate"
-    missing_files = [f for f in CANDIDATE_FILES if not (candidate_dir / f).is_file()]
+    missing_files = [f for f in CANDIDATE_FILES if not _is_file(candidate_dir / f)]
     check("candidate", not missing_files,
           "generators/candidate has generator.py, config.json, requirements.txt"
           if not missing_files else
@@ -280,7 +299,7 @@ def doctor(root: Path) -> dict[str, Any]:
     else:
         coldkey = wallet_path / wallet_name / "coldkeypub.txt"
         hotkey = wallet_path / wallet_name / "hotkeys" / wallet_hotkey
-        wallet_ok = coldkey.is_file() and hotkey.is_file()
+        wallet_ok = _is_file(coldkey) and _is_file(hotkey)
         check("wallet", wallet_ok,
               (f"coldkey and hotkey {wallet_name}/{wallet_hotkey} "
                f"{'found' if wallet_ok else 'not found'} under {wallet_path}"),
@@ -317,7 +336,7 @@ def _ssh_key_path() -> Path:
     if override:
         return Path(override).expanduser()
     config = Path.home() / ".lium/config.ini"
-    if config.is_file():
+    if _is_file(config):
         import configparser
         parser = configparser.ConfigParser()
         try:

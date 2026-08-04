@@ -155,7 +155,11 @@ class DoctorTests(TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory, "repo")
             root.mkdir()
-            env = {"HOME": str(Path(directory, "home"))}
+            # CASCADE_DIR must point inside the sandbox: the default is
+            # /root/cascade, whose mere existence (or an unreadable /root)
+            # on the host would leak into the result.
+            env = {"HOME": str(Path(directory, "home")),
+                   "CASCADE_DIR": str(Path(directory, "nowhere/cascade"))}
             with patch.dict(os.environ, env, clear=True):
                 report = status.doctor(root)
         self.assertFalse(report["ready"])
@@ -222,12 +226,23 @@ class DoctorTests(TestCase):
         self.assertFalse(credentials["ok"])
         self.assertIn("BAD", credentials["detail"])
 
+    def test_unreadable_path_reads_as_absent_not_a_crash(self):
+        # On a non-root host /root/cascade can raise EACCES on stat, which
+        # pathlib does not swallow. The doctor must report the stage as not
+        # ready instead of crashing (seen on the CI runner).
+        class Denied:
+            def is_file(self):
+                raise PermissionError(13, "Permission denied")
+
+        self.assertFalse(status._is_file(Denied()))
+
     def test_doctor_json_is_machine_readable(self):
         with TemporaryDirectory() as directory:
             root = Path(directory, "repo")
             root.mkdir()
-            with patch.dict(os.environ, {"HOME": str(Path(directory, "home"))},
-                            clear=True):
+            env = {"HOME": str(Path(directory, "home")),
+                   "CASCADE_DIR": str(Path(directory, "nowhere/cascade"))}
+            with patch.dict(os.environ, env, clear=True):
                 report = status.doctor(root)
         parsed = json.loads(json.dumps(report))
         self.assertEqual({c["name"] for c in parsed["checks"]},
