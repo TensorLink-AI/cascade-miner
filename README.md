@@ -323,7 +323,11 @@ The controller has two explicit modes:
   `--approve`.
 - `autonomous` runs explicitly allowlisted action commands without asking and
   can perform multiple bounded improvement/evaluation passes. Set
-  `--max-improvements-per-round` to the maximum passes per round.
+  `--max-improvements-per-round` to the maximum passes per round: after each
+  successful evaluation the controller immediately starts the next improvement
+  pass in the same poll, until the cap (or a policy limit) stops it. Human
+  mode instead pauses at every approval, so its cadence is one pass per
+  approved request.
 
 Agents never receive wallet secrets or execute privileged commands directly.
 Human mode approves named actions individually. Autonomous mode can create and
@@ -366,6 +370,32 @@ For bounded autonomous evaluation:
   --autonomous-actions "gpu_evaluation" \
   --improve-command ".venv/bin/python scripts/improve_candidate.py"
 ```
+
+### Iterating several times in one round
+
+To let the miner try, say, five experiments inside a single ~12h round, run
+autonomous mode with the per-round cap raised:
+
+```bash
+.venv/bin/python -m miner.controller \
+  --mode autonomous \
+  --interval 300 \
+  --max-improvements-per-round 5 \
+  --approved-eval-command "./scripts/run-gpu-evaluation" \
+  --autonomous-actions "gpu_evaluation" \
+  --improve-command ".venv/bin/python scripts/improve_candidate.py"
+```
+
+Each pass is one bounded experiment: improve one thing, evaluate it paired
+against the king, read the result, then the next pass starts from what was
+learned (the agent sees the updated scores and experiment ledger). The chain
+stops early when a pass fails, when the agent stops requesting evaluation,
+or when a `policy.toml` cap declines the next evaluation — a declined action
+queues for approval instead of erroring, so a budget cap pauses the chain
+rather than killing the loop. Budget for it: five passes means up to five GPU
+evaluations per round, so set the `policy.toml` per-24h run/hour caps to what
+you are willing to spend. In human mode the same flag only sets an upper
+bound — each evaluation still waits for `--approve`, one pass at a time.
 
 The example paths above now all exist. The GPU command is operational and
 spends money only after the configured approval/allowlist gate. The `ops/`
