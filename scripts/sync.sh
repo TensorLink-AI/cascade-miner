@@ -11,8 +11,10 @@
 #      old metric
 #   3. surface what changed (chain.toml, decisions/, eval code) so the notes
 #      can be updated where they went stale
-#   4. stamp the "Last synced" line in notes/CONTRACT.md
-#   5. run the offline test suite
+#   4. regenerate notes/upstream-state.json + notes/UPSTREAM.md — the machine
+#      half of that knowledge, which the tests pin notes/CONTRACT.md against
+#   5. stamp the "Last synced" line in notes/CONTRACT.md
+#   6. run the offline test suite
 #
 # Safe to run on a cron. `--check` only reports whether upstream moved
 # (exit 1 if behind) and changes nothing, so it can drive an alert.
@@ -34,10 +36,11 @@ usage() {
 Usage: bash scripts/sync.sh [--check]
 
 Sync the cascade reference clone and miner venv with upstream:
-pull, reinstall into the venv, report miner-facing changes, stamp
-notes/CONTRACT.md, run tests.
+pull, reinstall into the venv, report miner-facing changes, regenerate
+notes/upstream-state.json, stamp notes/CONTRACT.md, run tests.
 
-  --check   fetch and report whether upstream moved; change nothing.
+  --check   fetch and report whether upstream moved (and whether the
+            committed snapshot still matches it); change nothing.
             Exits 1 when behind (cron-friendly), 0 when current.
 EOF
 }
@@ -65,7 +68,14 @@ UPSTREAM="$(git -C "$CASCADE_DIR" rev-parse "$UPSTREAM_REF" 2>/dev/null)" \
 
 if [ "$OLD" = "$UPSTREAM" ]; then
     info "already current at ${OLD:0:7}"
-    [ "$CHECK_ONLY" = 1 ] && exit 0
+    if [ "$CHECK_ONLY" = 1 ]; then
+        # The clone has not moved, but the committed snapshot still has to
+        # match it — a hand-edit or a half-finished sync shows up here.
+        "${PYTHON:-python3}" "$ROOT/scripts/upstream_state.py" \
+            --cascade-dir "$CASCADE_DIR" --check | sed 's/^/    /'
+        [ "${PIPESTATUS[0]}" = 0 ] || exit 1
+        exit 0
+    fi
 else
     BEHIND="$(git -C "$CASCADE_DIR" rev-list --count "$OLD..$UPSTREAM")"
     info "behind by $BEHIND commit(s): ${OLD:0:7} -> ${UPSTREAM:0:7}"
@@ -100,6 +110,13 @@ uv pip install --quiet --python "$VENV_PY" "$CASCADE_DIR[$EXTRAS]" \
     || fail "uv pip install '$CASCADE_DIR[$EXTRAS]' failed"
 "$VENV_PY" -c 'import cascade' || fail "venv cannot import cascade after reinstall"
 info "venv now runs cascade $NEW"
+
+step "regenerate the upstream snapshot"
+# Same generator the upstream-sync workflow runs, so the local box and CI can
+# never disagree about what upstream says. Stdlib only — it does not need the
+# venv, and it must keep working before a reinstall.
+"${PYTHON:-python3}" "$ROOT/scripts/upstream_state.py" --cascade-dir "$CASCADE_DIR" \
+    || fail "could not regenerate notes/upstream-state.json"
 
 step "stamp notes/CONTRACT.md"
 STAMP="Last synced: $(date -u +%F), cascade \`$NEW\`."

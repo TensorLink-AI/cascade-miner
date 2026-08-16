@@ -6,6 +6,11 @@ __pycache__/
 # Operator-owned autonomy policy — copy policy.example.toml and review it
 /policy.toml
 
+# The cascade reference clone, when it is checked out inside the tree
+# (upstream-sync.yml does exactly that). It is read-only upstream code and
+# must never be committed here.
+/cascade/
+
 # Eval-pool data and raw score archives — regenerable, not code
 pools/
 scores/

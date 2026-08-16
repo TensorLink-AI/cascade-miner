@@ -3,12 +3,20 @@
 A miner for the **cascade** Bittensor subnet (netuid 91, finney).
 
 cascade holds the model byte-identical and scores the *data*: you submit a
-purely-algorithmic time-series generator, the owner trains a fixed forecaster
-from random initialisation on your corpus, and a private rotating held-out set
-decides whether your data trains a better forecaster than the reigning king's.
+purely-algorithmic time-series generator, the owner trains a fixed forecaster on
+your corpus, and a private rotating held-out set decides whether your data
+trains a better forecaster than the reigning king's.
 
 Only the **single best** challenger from each heat reaches the duel, and it must
 clear a confidence-bound margin to take the throne. Rounds are ~12h.
+
+Since 2026-08-05 that training run is **warm-started**: after a ripe reign the
+subnet promotes up to three reign checkpoints and rotates rounds across them,
+so a round no longer necessarily starts from random init. King and challenger
+still share the round's init — the generator remains the only variable — but
+your corpus is increasingly judged on what it adds to a partially-trained
+model. `notes/CONTRACT.md` has the mechanics; `notes/UPSTREAM.md` has the live
+values.
 
 ## Ground rule
 
@@ -19,6 +27,34 @@ venv as an ordinary library. **We never edit it.**
 git -C /root/cascade pull
 uv pip install --python .venv/bin/python --reinstall /root/cascade
 ```
+
+## Staying in sync with the subnet
+
+The competition changes as decisions land upstream, and stale notes cost real
+rounds — warm-start went live on 2026-08-05 while these notes still described a
+from-scratch trainer. Two halves keep that from repeating:
+
+| | what | who runs it |
+|---|---|---|
+| **Facts** | `scripts/upstream_state.py` extracts every miner-facing `chain.toml` key and `DEC-CA-` node into `notes/upstream-state.json` + `notes/UPSTREAM.md` | the `upstream-sync` workflow, every 6h — it pushes the regenerated snapshot and opens/refreshes one PR |
+| **Prose** | `notes/CONTRACT.md` interprets those facts | you (or your agent), prompted by that PR |
+
+`tests/test_stale_references.py` pins the prose to the snapshot, so a fact that
+contradicts a sentence fails the suite and the failure names the stale claim.
+The sync PR runs the suite in-job and reports the result in its body: green
+means facts-only, red means prose needs folding first.
+
+Merging is **not** the end of it — the runner cannot touch the box where
+scoring happens:
+
+```bash
+bash scripts/sync.sh          # pull + REINSTALL + regenerate + stamp + test
+bash scripts/sync.sh --check  # cron-friendly: exit 1 when behind, change nothing
+```
+
+Scoring imports come from the *installed* package, so an un-reinstalled venv
+keeps scoring with the old metric, and numbers from before the change are not
+comparable to numbers after it (`CLAUDE.md` Rule 3).
 
 ## Layout
 
@@ -33,6 +69,7 @@ miner/
 generators/      candidate generator repos; each is a deployable submission dir
 pools/           eval-pool snapshots (gitignored — data, not code)
 notes/           CONTRACT.md, BUDGET.md, METHOD.md, EXPERIMENTS.md
+                 UPSTREAM.md + upstream-state.json (GENERATED — see below)
 ```
 
 A submission is exactly three files — `generator.py`, `config.json`,

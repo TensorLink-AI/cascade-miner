@@ -39,6 +39,13 @@ class SyncScriptTests(TestCase):
         self.assertIn("not a git checkout", result.stderr)
         self.assertIn("CASCADE_DIR", result.stderr)
 
+    def test_sync_regenerates_the_upstream_snapshot(self):
+        # CI and the operator host must run the SAME extractor, or they end up
+        # with different pictures of upstream.
+        source = SCRIPT.read_text()
+        self.assertIn("scripts/upstream_state.py", source)
+        self.assertIn("--check", source)
+
     def test_reinstall_happens_and_notes_document_the_script(self):
         # A pull without a reinstall silently scores with the old metric; the
         # script and the notes must both carry that invariant.
