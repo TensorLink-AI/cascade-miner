@@ -5,15 +5,25 @@ Operating notes for AI-assisted sessions.
 ## The game
 
 We submit a purely-algorithmic synthetic time-series generator to the **cascade**
-subnet (netuid 91, finney). The owner trains a fixed forecaster from scratch on
-our corpus and scores it on a private, rotating held-out set. Model, seeds and
-compute are identical between king and challenger — **the generator is the only
-variable**. Only the single best challenger from each heat reaches the duel, and
-it must clear a confidence-bound margin to take the throne.
+subnet (netuid 91, finney). The owner trains a fixed forecaster on our corpus and
+scores it on a private, rotating held-out set. Model, seeds, init and compute are
+identical between king and challenger — **the generator is the only variable**.
+Only the single best challenger from each heat reaches the duel, and it must
+clear a confidence-bound margin to take the throne.
+
+Warm-start is armed (2026-08-05): the run starts from a promoted reign
+checkpoint, rotating across a member set, not always from random init. The duel
+stays fair — both sides share the round's init — but "what does this corpus add
+to an already-trained model" is now the question. See `notes/CONTRACT.md`.
 
 Read `notes/CONTRACT.md` (submission rules), `notes/BUDGET.md` (how the training
 budget is derived), `notes/METHOD.md` (evaluation method), and
 `notes/EXPERIMENTS.md` (what has been tried) before starting.
+
+`notes/UPSTREAM.md` + `notes/upstream-state.json` are **generated** from the
+reference clone by `scripts/upstream_state.py` and refreshed by the
+`upstream-sync` workflow — never hand-edit them, and when they disagree with
+prose, they are right.
 
 **Never modify `/root/cascade`** — read-only reference clone, installed as a
 library. Refresh with `git pull` + reinstall; never edit.
