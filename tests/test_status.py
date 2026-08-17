@@ -208,6 +208,41 @@ class DoctorTests(TestCase):
         # Registration cannot be checked offline; the reminder must survive.
         self.assertIn("one-shot per hotkey", rendered)
 
+    def test_a_moved_reference_clone_fails_the_upstream_sync_check(self):
+        # The operator pulls the clone but forgets scripts/sync.sh: the venv
+        # still scores with the old metric and nothing says so. The doctor is
+        # what agents run to orient, so the drift has to surface there.
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            home = Path(directory, "home")
+            root.mkdir()
+            env = seed_ready_host(root, home)
+            cascade_dir = Path(env["CASCADE_DIR"])
+            (cascade_dir / "chain.toml").write_text(
+                "[subnet]\nnetuid = 91\n\n[round]\nfinalists = 1\n", encoding="utf-8")
+            notes = root / "notes"
+            notes.mkdir()
+            (notes / "upstream-state.json").write_text(
+                json.dumps({"keys": {"subnet.netuid": 91, "round.finalists": 3},
+                            "untracked_keys": []}), encoding="utf-8")
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(status, "_module_available", return_value=True):
+                report = status.doctor(root)
+        check = {c["name"]: c for c in report["checks"]}["upstream sync"]
+        self.assertFalse(check["ok"])
+        self.assertIn("round.finalists", check["detail"])
+        self.assertIn("scripts/sync.sh", check["fix"])
+        self.assertFalse(report["ready"])
+
+    def test_upstream_sync_check_reports_drift_it_cannot_invent(self):
+        # No snapshot to compare against (or an unreadable clone) must read as
+        # "nothing to say", never as a phantom failure that blocks a host.
+        with TemporaryDirectory() as directory:
+            root = Path(directory, "repo")
+            root.mkdir()
+            self.assertEqual(
+                status.upstream_drift(root, root / "notes/upstream-state.json"), "")
+
     def test_pending_approvals_warn_but_do_not_block_readiness(self):
         with TemporaryDirectory() as directory:
             root = Path(directory, "repo")

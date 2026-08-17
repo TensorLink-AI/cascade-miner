@@ -210,6 +210,37 @@ def _env_value(name: str, env_file_values: dict[str, str]) -> str:
     return "" if "replace_me" in value else value.strip()
 
 
+def upstream_drift(cascade_dir: Path, snapshot: Path) -> str:
+    """Miner-facing values where the reference clone differs from our snapshot.
+
+    Offline by design, like every other doctor check: it compares the clone the
+    host already has against `notes/upstream-state.json`, so it catches "the
+    clone moved and nothing was regenerated". It cannot see a change nobody has
+    pulled yet — `scripts/sync.sh --check` fetches, and the upstream-sync
+    workflow watches from CI. Empty string means in sync, or means there is
+    nothing to compare (no snapshot, unreadable clone) — this check reports
+    drift, it never invents it.
+    """
+    try:
+        from scripts import upstream_state
+    except ImportError:                                     # pragma: no cover
+        return ""                                           # not a mining blocker
+    if not _is_file(snapshot):
+        return ""
+    try:
+        live = upstream_state.build(cascade_dir)
+        committed = upstream_state.load_snapshot(snapshot)
+    except (OSError, ValueError, upstream_state.ExtractError):
+        return ""
+    changed = upstream_state.changed_keys(committed, live)
+    added = sorted(set(live["untracked_keys"]) - set(committed.get("untracked_keys", [])))
+    if not changed and not added:
+        return ""
+    shown = ", ".join((changed + [f"{name} (new)" for name in added])[:3])
+    total = len(changed) + len(added)
+    return f"{total} value(s) differ ({shown}{', …' if total > 3 else ''})"
+
+
 def doctor(root: Path) -> dict[str, Any]:
     """Onboarding checklist: what is ready, what is not, and the fix for each.
 
@@ -254,6 +285,14 @@ def doctor(root: Path) -> dict[str, Any]:
           else f"no chain.toml under {cascade_dir}",
           f"git clone https://github.com/TensorLink-AI/cascade.git {cascade_dir} "
           "(or export CASCADE_DIR=/path/to/cascade)")
+
+    if cascade_ok:
+        drift = upstream_drift(cascade_dir, root / "notes/upstream-state.json")
+        check("upstream sync", not drift,
+              "notes/upstream-state.json matches the reference clone"
+              if not drift else f"clone has moved: {drift}",
+              "bash scripts/sync.sh  (pull + REINSTALL + regenerate the snapshot; "
+              "scoring imports come from the installed package)")
 
     lium = shutil.which("lium") or (
         str(Path.home() / ".lium/bin/lium")

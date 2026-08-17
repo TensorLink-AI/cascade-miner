@@ -26,6 +26,7 @@ netuid = 91
 [round]
 finalists = 2
 heat_n_windows = 2000
+a_key_invented_after_this_extractor_was_written = 7
 
 [scoring]
 cascade_enabled = true
@@ -69,6 +70,20 @@ class ExtractorTests(TestCase):
         state = us.build(self.cascade)
         self.assertIn("training.target_train_hours", state["missing_keys"])
         self.assertNotIn("training.target_train_hours", state["keys"])
+
+    def test_a_key_added_upstream_is_inventoried_even_though_untracked(self):
+        # The blind spot in a curated list: cascade_top_k did not exist when the
+        # previous notes were written, so nothing was watching for it. Names of
+        # every scalar in the competition sections are carried so a new one
+        # surfaces as a diff line in the sync PR.
+        state = us.build(self.cascade)
+        self.assertIn(
+            "round.a_key_invented_after_this_extractor_was_written",
+            state["untracked_keys"],
+        )
+        # tracked keys are not duplicated into the inventory
+        self.assertNotIn("round.finalists", state["untracked_keys"])
+        self.assertNotIn("subnet.netuid", state["untracked_keys"])
 
     def test_decision_frontmatter_is_read(self):
         [decision] = us.build(self.cascade)["decisions"]
@@ -114,6 +129,11 @@ class CliTests(TestCase):
             self.assertIn("STALE", result.stdout)
             # names the keys that moved, so a cron alert is actionable on its own
             self.assertIn("round.finalists", result.stdout)
+            self.assertIn(
+                "NEW upstream key, untracked: "
+                "round.a_key_invented_after_this_extractor_was_written",
+                result.stdout,
+            )
             self.assertEqual(us.SNAPSHOT.read_bytes(), before)
 
     def test_print_writes_nothing_to_the_repo(self):
@@ -150,6 +170,12 @@ class CommittedSnapshotTests(TestCase):
     def test_rendered_table_matches_the_json(self):
         # The two files are written together; a hand-edit to either shows up here.
         self.assertEqual(us.RENDERED.read_text(encoding="utf-8"), us.render(self.state))
+
+    def test_the_untracked_inventory_is_populated(self):
+        # An empty inventory would mean the new-key alarm is silently disarmed.
+        self.assertTrue(self.state["untracked_keys"])
+        for name in self.state["untracked_keys"]:
+            self.assertNotIn(name, self.state["keys"])
 
     def test_decisions_are_recorded(self):
         ids = {d["id"] for d in self.state["decisions"]}

@@ -61,5 +61,15 @@ class WorkflowTests(TestCase):
         self.assertIn("scripts/sync.sh", source)
         self.assertIn("reinstall", source)
 
+    def test_sync_reports_its_own_breakage(self):
+        # "No sync PR" must not be ambiguous between "upstream is quiet" and
+        # "the robot has been erroring for a fortnight" — which is the same
+        # silent-staleness failure the sync exists to prevent.
+        source = SYNC_WF.read_text()
+        self.assertIn("if: failure()", source)
+        self.assertIn("issues: write", source)
+        self.assertIn("gh issue create", source)
+        self.assertIn("gh issue close", source)
+
     def test_the_superseded_watcher_is_gone(self):
         self.assertFalse((ROOT / ".github/workflows/upstream-watch.yml").exists())

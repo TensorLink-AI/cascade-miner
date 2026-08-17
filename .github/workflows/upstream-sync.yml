@@ -18,16 +18,22 @@ name: upstream-sync
 
 on:
   schedule:
+    # GitHub disables scheduled workflows after 60 days with no repository
+    # activity, and says so only by email to the repo admin. If syncs go quiet
+    # for weeks, check that this schedule is still enabled before believing
+    # upstream simply did not move; workflow_dispatch re-runs it by hand.
     - cron: "17 */6 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write          # only for the self-report below when the sync breaks
 
 env:
   SYNC_BRANCH: automation/upstream-sync
   PR_TITLE: "upstream sync: refresh the cascade state snapshot"
+  BROKEN_ISSUE_TITLE: "upstream-sync is failing — the miner is flying blind"
 
 concurrency:
   group: upstream-sync
@@ -220,4 +226,44 @@ jobs:
             if [ "$changed" = "0" ]; then
               gh pr close "$num" --comment "Snapshot is current with upstream cascade; nothing left in this PR."
             fi
+          fi
+
+      # A silent robot is the failure this whole mechanism exists to prevent:
+      # "no sync PR" must not be ambiguous between "upstream is quiet" and "the
+      # sync has been erroring for a fortnight". A broken run says so out loud.
+      - name: Report a broken sync
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "The \`upstream-sync\` workflow failed: ${RUN_URL}"
+            echo
+            echo "While it is failing, no sync PR appears — and an absent PR otherwise"
+            echo "reads as \"upstream has not moved\". Until this is fixed, check by hand:"
+            echo
+            echo '```bash'
+            echo "bash scripts/sync.sh --check   # on the operator host"
+            echo '```'
+            echo
+            echo "This issue closes itself on the next successful run."
+          } > broken.md
+          num="$(gh issue list --state open --search "in:title \"$BROKEN_ISSUE_TITLE\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body-file broken.md
+          else
+            gh issue create --title "$BROKEN_ISSUE_TITLE" --body-file broken.md
+          fi
+
+      - name: Clear the broken-sync report
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          num="$(gh issue list --state open --search "in:title \"$BROKEN_ISSUE_TITLE\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh issue close "$num" --comment "upstream-sync ran successfully again."
           fi

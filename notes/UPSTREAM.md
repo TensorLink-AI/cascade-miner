@@ -99,6 +99,8 @@ table disagree, the test suite says which sentence is stale.
 | `scoring.cascade_top_k` | `3` | member checkpoints one promotion may declare |
 | `scoring.cascade_quality_epsilon` | `0.05` | quality floor members must sit within |
 
+*Plus 53 further keys in those sections, inventoried by name in `upstream-state.json` so a newly-added one shows up in the sync diff. Promote one into the table above (`KEYS` in `scripts/upstream_state.py`) when it starts mattering to us.*
+
 ## Decision nodes
 
 | id | status | date | title |

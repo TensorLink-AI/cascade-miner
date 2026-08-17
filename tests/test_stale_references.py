@@ -160,7 +160,15 @@ class ContractMatchesUpstreamTests(TestCase):
         ):
             self.assert_key_stated(key)
 
-    def test_netuid_is_current_everywhere_it_is_claimed(self):
+    def test_the_pins_are_not_vacuous(self):
+        # A pin helper that never fails is worse than no pin: the suite goes
+        # green and the notes rot anyway. Prove both directions still bite.
+        with self.assertRaises(AssertionError):
+            self.assert_states("a claim no document makes", "some text", "doc", "why")
+        with self.assertRaises(AssertionError):
+            self.assert_omits("some", "some text", "doc", "why")
+
+    def test_netuid_is_current_where_it_is_claimed(self):
         netuid = str(self.keys["subnet.netuid"])
         for doc_name, doc in (
             ("notes/CONTRACT.md", self.contract),

@@ -118,7 +118,26 @@ step "regenerate the upstream snapshot"
 "${PYTHON:-python3}" "$ROOT/scripts/upstream_state.py" --cascade-dir "$CASCADE_DIR" \
     || fail "could not regenerate notes/upstream-state.json"
 
+step "tests"
+# BEFORE the stamp, deliberately. The suite carries the prose pins
+# (tests/test_stale_references.py), so a pass is the evidence that
+# notes/CONTRACT.md still agrees with the snapshot just regenerated — which is
+# exactly what the stamp claims.
+if (cd "$ROOT" && "$VENV_PY" -m unittest discover -s tests -q); then
+    TESTS_PASSED=1
+    info "test suite passed"
+else
+    TESTS_PASSED=0
+    info "test suite FAILED"
+fi
+
 step "stamp notes/CONTRACT.md"
+if [ "$TESTS_PASSED" = 0 ]; then
+    info "NOT stamping — the stamp means 'prose reviewed at this revision', and"
+    info "the prose pins above say notes/CONTRACT.md still contradicts cascade $NEW."
+    info "Fold the reported changes in, then re-run this script to stamp."
+    exit 1
+fi
 STAMP="Last synced: $(date -u +%F), cascade \`$NEW\`."
 if grep -q '^Last synced:' "$ROOT/notes/CONTRACT.md"; then
     sed -i "s|^Last synced:.*|$STAMP|" "$ROOT/notes/CONTRACT.md"
@@ -126,10 +145,6 @@ if grep -q '^Last synced:' "$ROOT/notes/CONTRACT.md"; then
 else
     info "no 'Last synced:' line found in notes/CONTRACT.md — not stamping"
 fi
-
-step "tests"
-(cd "$ROOT" && "$VENV_PY" -m unittest discover -s tests -q) || fail "test suite failed"
-info "test suite passed"
 
 step "done"
 info "remember: numbers from before a metric change are not comparable —"

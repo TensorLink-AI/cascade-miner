@@ -46,6 +46,19 @@ class SyncScriptTests(TestCase):
         self.assertIn("scripts/upstream_state.py", source)
         self.assertIn("--check", source)
 
+    def test_tests_run_before_the_stamp_and_gate_it(self):
+        # "Last synced" means PROSE REVIEWED at that revision, and the prose
+        # pins live in the suite — so stamping a failing tree would forge the
+        # one claim the stamp makes.
+        source = SCRIPT.read_text()
+        self.assertLess(
+            source.index('step "tests"'), source.index('step "stamp notes/CONTRACT.md"'),
+            "the suite must run before the stamp, not after",
+        )
+        stamp_section = source[source.index('step "stamp notes/CONTRACT.md"'):]
+        self.assertIn('if [ "$TESTS_PASSED" = 0 ]', stamp_section)
+        self.assertIn("NOT stamping", stamp_section)
+
     def test_reinstall_happens_and_notes_document_the_script(self):
         # A pull without a reinstall silently scores with the old metric; the
         # script and the notes must both carry that invariant.

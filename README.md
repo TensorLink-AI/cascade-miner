@@ -42,7 +42,13 @@ from-scratch trainer. Two halves keep that from repeating:
 `tests/test_stale_references.py` pins the prose to the snapshot, so a fact that
 contradicts a sentence fails the suite and the failure names the stale claim.
 The sync PR runs the suite in-job and reports the result in its body: green
-means facts-only, red means prose needs folding first.
+means facts-only, red means prose needs folding first. Keys we don't track yet
+are inventoried by name, so a key *added* upstream also shows up in that diff,
+and a broken sync run files an issue rather than going quiet.
+
+Locally, `python -m miner.status --doctor` runs the same comparison against the
+clone this host has, so "the clone was pulled but nothing was regenerated"
+shows up in the readiness checklist.
 
 Merging is **not** the end of it — the runner cannot touch the box where
 scoring happens:

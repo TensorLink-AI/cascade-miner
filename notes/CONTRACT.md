@@ -199,7 +199,13 @@ in two, and only one half needs a human.
 `chain.toml` key and every `DEC-CA-` node out of the reference clone into
 `notes/upstream-state.json` + `notes/UPSTREAM.md`. The `upstream-sync`
 workflow reruns it every 6h and, when a value moves, pushes the regenerated
-snapshot to `automation/upstream-sync` and opens/refreshes one PR.
+snapshot to `automation/upstream-sync` and opens/refreshes one PR. Keys we do
+*not* track are still inventoried by name, so a key the owner **adds** upstream
+(as `cascade_top_k` once was) shows up as a diff line instead of waiting for
+someone to think of it. If the workflow itself breaks it files an issue against
+this repo — otherwise "no sync PR" would quietly mean two different things.
+`python -m miner.status --doctor` runs the same comparison locally against the
+clone the host already has.
 
 **Prose does not.** This file is pinned to the snapshot by
 `tests/test_stale_references.py`: it asserts, on the values rather than the
@@ -210,9 +216,10 @@ sentence.
 
 What still needs a human (or an agent) per sync:
 
-1. Fold the flagged changes into this file, then restamp the line below — it
-   means *prose reviewed at this revision*, which is why the bot never moves
-   it.
+1. Fold the flagged changes into this file. The line below is *prose reviewed
+   at this revision*, so nothing stamps it on your behalf: the bot never
+   touches it, and `scripts/sync.sh` moves it only after the suite — prose
+   pins included — passes.
 2. Run `bash scripts/sync.sh` **on the operator host**: merging a PR does not
    reinstall the library, and scoring imports come from the installed package,
    so an un-reinstalled venv keeps scoring with the old metric.

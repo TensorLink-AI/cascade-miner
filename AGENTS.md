@@ -26,6 +26,14 @@ bash scripts/setup.sh --check                     # setup steps, verified in pla
 .venv/bin/python -m miner.status --doctor --json  # full checklist with a fix per stage
 ```
 
+The competition itself moves. `notes/UPSTREAM.md` and
+`notes/upstream-state.json` are **generated** from the clone by
+`scripts/upstream_state.py` (refreshed by the `upstream-sync` workflow) — never
+hand-edit them, and where they disagree with prose in `notes/`, they are right.
+When the doctor's `upstream sync` check is red, or a sync PR reports failing
+prose pins, folding those changes into `notes/CONTRACT.md` comes before any
+generator work: designing against a stale contract wastes the round.
+
 ## For automated improvement events
 
 - Work only in this repository and treat the Cascade reference clone as a

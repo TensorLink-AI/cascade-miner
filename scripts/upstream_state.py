@@ -120,6 +120,17 @@ KEYS: tuple[tuple[str, str, str], ...] = (
     ("Warm start", "scoring.cascade_quality_epsilon", "quality floor members must sit within"),
 )
 
+# KEYS is curated, which leaves one blind spot: a key the owner ADDS upstream is
+# invisible to a list written before it existed — and `cascade_top_k` was exactly
+# that kind of key. So every scalar in the sections that govern the competition
+# is also inventoried BY NAME. The names cost nothing to carry, and a new one
+# appears as a single `+` line in the sync PR, which is all the prompt we need
+# to decide whether it deserves a tracked entry above.
+INVENTORIED_SECTIONS: tuple[str, ...] = (
+    "subnet", "generator", "training", "round", "eval",
+    "scoring", "dependencies", "static_guard",
+)
+
 
 class ExtractError(RuntimeError):
     """Raised for an unusable reference clone — the caller turns it into exit 1."""
@@ -202,6 +213,13 @@ def build(cascade: Path) -> dict[str, Any]:
         else:
             missing.append(dotted)
 
+    untracked = sorted(
+        f"{section}.{name}"
+        for section in INVENTORIED_SECTIONS
+        for name, value in (chain.get(section) or {}).items()
+        if f"{section}.{name}" not in keys and not isinstance(value, dict)
+    )
+
     return {
         "schema": SCHEMA,
         "generated_by": "scripts/upstream_state.py",
@@ -213,6 +231,7 @@ def build(cascade: Path) -> dict[str, Any]:
         },
         "keys": keys,
         "missing_keys": missing,
+        "untracked_keys": untracked,
         "decisions": read_decisions(cascade),
     }
 
@@ -254,6 +273,15 @@ def render(state: dict[str, Any]) -> str:
             seen.add(group)
             lines += ["", f"## {group}", "", "| key | value | why it matters |", "|---|---|---|"]
         lines.append(f"| `{dotted}` | {_fmt(state['keys'][dotted])} | {_cell(why)} |")
+
+    if state.get("untracked_keys"):
+        lines += [
+            "",
+            f"*Plus {len(state['untracked_keys'])} further keys in those sections, "
+            "inventoried by name in `upstream-state.json` so a newly-added one shows "
+            "up in the sync diff. Promote one into the table above (`KEYS` in "
+            "`scripts/upstream_state.py`) when it starts mattering to us.*",
+        ]
 
     if state["missing_keys"]:
         lines += [
@@ -333,6 +361,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         for key in changed_keys(old_state, state):
             print(f"    {key}: {old_state.get('keys', {}).get(key, '(absent)')!r}"
                   f" -> {state['keys'].get(key, '(absent)')!r}")
+        for name in sorted(set(state["untracked_keys"]) - set(old_state.get("untracked_keys", []))):
+            print(f"    NEW upstream key, untracked: {name}")
         return EXIT_DRIFT
 
     SNAPSHOT.write_text(payload, encoding="utf-8")
