@@ -69,6 +69,11 @@ trained king and challenger; an aggregate from an older run is not a control.
   batch — not a comparison against an older run.
 - **Dose changes large enough to exceed the noise floor.** Small mixture tweaks
   are unmeasurable; screen at a size where a real effect would show.
+  `python -m miner.screen <candidate> --king generators/king-control` does this
+  for free: it expresses every corpus difference in units of the generator's own
+  seed noise, names the king coverage a change trades away, and checks with
+  `--claim` that the corpus carries the mechanism you believe you added. Its
+  `measurable` verdict licenses a paid eval and is never evidence of a win.
 - **Prefer replacing weak components over adding new ones.** The model has fixed
   capacity, so added coverage tends to displace existing coverage rather than
   accumulate. Test subtraction as seriously as addition.

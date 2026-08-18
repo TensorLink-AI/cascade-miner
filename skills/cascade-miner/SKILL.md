@@ -1,6 +1,6 @@
 ---
 name: cascade-miner
-description: Operate the cascade-miner harness for Bittensor subnet 91 (cascade) from inside an agent session — first-time setup, the improve → verify → request-evaluation → analyse loop, and answering the controller's improvement requests in hermes-native mode. Use whenever the session mentions cascade, SN91, netuid 91, the eval pool, a king/challenger duel, or this repository's controller.
+description: Operate the cascade-miner harness for Bittensor subnet 91 (cascade) from inside an agent session — first-time setup, the improve → verify → screen → request-evaluation → analyse loop, and answering the controller's improvement requests in hermes-native mode. Use whenever the session mentions cascade, SN91, netuid 91, the eval pool, a king/challenger duel, or this repository's controller.
 ---
 
 # cascade-miner
@@ -56,7 +56,19 @@ not at `~/.ssh/id_ed25519`.
    .venv/bin/cascade verify generators/candidate --chain-toml "$CASCADE_DIR/chain.toml"
    .venv/bin/python scripts/quick_verify.py generators/candidate   # low-memory hosts
    ```
-3. **Request evaluation** — write `runs/agent-request.json`:
+3. **Screen** before asking anyone to spend money:
+   ```bash
+   .venv/bin/python -m miner.screen generators/candidate \
+       --king generators/king-control --n-series 256 --claim <family>+
+   ```
+   Exit 1 `blocked` — a contract gate fails, fix it. Exit 3 `undosed` — the
+   corpus is indistinguishable from the king's at this resolution, so a paired
+   eval buys a null; raise the dose instead. Exit 4 — the corpus does not carry
+   a claim you made, which means the code does not do what you think. Exit 0
+   `measurable` licenses the paid step and nothing more: the screen ranks
+   nothing and never predicts a duel. Read its `challenges` list before writing
+   the request — it asks what you are trading away and what effect you expect.
+4. **Request evaluation** — write `runs/agent-request.json`:
    ```json
    {"action": "gpu_evaluation", "reason": "...",
     "candidate_path": "generators/candidate", "estimated_hours": 1}
@@ -64,13 +76,13 @@ not at `~/.ssh/id_ed25519`.
    The controller queues it for approval (human mode) or runs the allowlisted
    command (autonomous mode). Training is backgrounded on the pod and polled,
    so progress appears in the controller's event log as it happens.
-4. **Analyse** the paired result — the point estimate is not the verdict:
+5. **Analyse** the paired result — the point estimate is not the verdict:
    ```bash
    .venv/bin/python -m miner.analyze --scores-root scores --king king-control
    ```
    The throne is decided on the lower confidence bound of a paired cluster
    bootstrap clearing `[scoring] win_margin`, not on the geomean.
-5. **Record** the hypothesis and outcome in `notes/EXPERIMENTS.md`. State the
+6. **Record** the hypothesis and outcome in `notes/EXPERIMENTS.md`. State the
    seed count and noise floor with every number. Say plainly when a result is
    null.
 

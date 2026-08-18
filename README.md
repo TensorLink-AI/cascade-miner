@@ -18,6 +18,9 @@ your corpus is increasingly judged on what it adds to a partially-trained
 model. `notes/CONTRACT.md` has the mechanics; `notes/UPSTREAM.md` has the live
 values.
 
+Operating an agent here? `AGENTS.md` is the brief and `llms.txt` is the
+one-page map of every document below.
+
 ## Ground rule
 
 `/root/cascade` is a read-only reference clone, installed into this project's
@@ -67,6 +70,8 @@ comparable to numbers after it (`CLAUDE.md` Rule 3).
 ```
 miner/
   pods.py        rent (-c 1), provision, assert deps, TTL guard, results puller
+  screen.py      free pre-GPU screen: contract gates, dose vs the king's corpus,
+                 coverage traded away, and whether the corpus carries your claims
   evaluate.py    train N seeds x M snapshots; saves per-window score components
   analyze.py     live-metric geomean + paired cluster-bootstrap LCB vs the king
   submit.py      prepare -> verify -> upload -> commit --ref -> confirm reveal
@@ -250,6 +255,12 @@ KING_REF=$(.venv/bin/python -c \
 # 2. structural + determinism gate (every check the trainer runs)
 .venv/bin/cascade verify ./generators/<name> --chain-toml /root/cascade/chain.toml
 
+# 2b. free screen: is the corpus different enough from the king's to be worth
+#     paying to measure? Exit 1 = fix it, 3 = raise the dose, 0 = go, 4 = a
+#     claim you made is not in the corpus. It never predicts the duel.
+.venv/bin/python -m miner.screen ./generators/<name> \
+    --king generators/king-control --n-series 256 --claim regime+
+
 # 3. train both arms on identical seeds/windows, saving per-window components
 for seed in 0 1 2; do
   .venv/bin/python -m miner.evaluate ./generators/king-control \
@@ -269,6 +280,41 @@ The receipt also records the king UID and published verdict fields, but
 `king_gen_ref` is the auditable control input. If no controller state exists
 yet, run the controller once to seed it and again after a new receipt is
 published. See `notes/METHOD.md` for the pairing and component-storage rules.
+
+## Screening before you spend
+
+`miner/screen.py` is the free step in front of the paid one. It generates a few
+hundred series from the candidate and from the fetched king, reduces each series
+to sixteen features (length, scale, trend, seasonal strength and period, spectral
+entropy, autocorrelation, jump rate, level shift, tail ratio, heteroscedasticity,
+intermittency, and two learnability proxies), and reports three things:
+
+- **Gates.** Length bounds, finiteness, duplicate fraction, projected generate
+  time and throughput, read from `notes/upstream-state.json` so they follow
+  upstream rather than a hardcoded copy. A `blocked` verdict means the round
+  would be wasted.
+- **Dose.** Every candidate-vs-king feature distance is divided by the same
+  generators' seed-to-seed distance. A difference smaller than a generator's own
+  seed noise cannot survive a paired eval, so an `undosed` verdict says the GPU
+  hour would buy a null — raise the dose instead of paying for it.
+- **The bet, in numbers.** Which features moved and by how much, how much of the
+  king's coverage the candidate no longer reaches (fixed capacity means new
+  coverage is traded, not added), how redundant the corpus is, and — with
+  `--claim` — whether the corpus actually carries the property you say you added.
+  A failed claim is the cheapest finding in the harness: the code does not do
+  what its author believes.
+
+Pass `--prior-king` to also see where the candidate sits relative to the
+prior-king → king direction. That is one noisy transition, not evidence; the
+report says so, and it exists to make a bet against history explicit.
+
+What it cannot do: rank corpora or predict a duel. Feature distance is not score
+improvement, and a corpus can differ on every feature and train a worse
+forecaster. `measurable` licenses a paired eval, nothing more — the verdict still
+comes from `miner.evaluate` + `miner.analyze` with a same-batch control.
+
+Use `--n-series 256` or more: the throughput figure and the duplicate fraction
+are extrapolations, and a smaller sample makes both noisy.
 
 ## Two things that will bite you
 

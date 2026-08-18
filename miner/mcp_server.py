@@ -46,6 +46,8 @@ IMPROVE_RESPONSE = Path("runs/improve-response.json")
 IMPROVE_STATUSES = ("completed", "failed", "rejected", "skipped")
 QUICK_VERIFY_TIMEOUT = 900
 FETCH_TIMEOUT = 600
+SCREEN_TIMEOUT = 1800
+SCREEN_DIR = Path("runs/screen")
 GENERATOR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 HARD_LIMITS = (
@@ -291,6 +293,35 @@ class Server:
             self._run_quick_verify,
         )
         self._tool(
+            "screen_candidate",
+            "Free pre-GPU screen of a candidate corpus against the king's "
+            "(fetch it first): contract gates, per-feature distance expressed "
+            "in units of the generator's own seed noise, coverage traded away, "
+            "and a check that the corpus carries the properties you claim for "
+            "it. Verdicts are `blocked` (fix it), `undosed` (a paired eval "
+            "would return a null — raise the dose) and `measurable` (worth "
+            "paying for). It never predicts a winner.",
+            {"properties": {
+                "candidate_path": {"type": "string",
+                                   "description": "Defaults to generators/candidate."},
+                "king_path": {"type": "string",
+                              "description": "The fetched king's directory, "
+                                             "default generators/king-control."},
+                "prior_king_path": {"type": "string",
+                                    "description": "Optional dethroned king, for "
+                                                   "direction only (n=1, weak)."},
+                "n_series": {"type": "integer", "minimum": 8},
+                "seed": {"type": "integer"},
+                "claims": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Properties you believe the corpus adds, e.g. "
+                                   "['regime+', 'seasonality-']. A failing claim "
+                                   "means the code does not do what you think.",
+                },
+            }},
+            self._screen_candidate,
+        )
+        self._tool(
             "get_improve_request",
             "The pending improvement request published by the controller's "
             "hermes-native hook (runs/improve-request.json), if any.",
@@ -524,6 +555,51 @@ class Server:
             "note": "quick_verify skips the static guard, sandbox, and "
                     "packaging checks; run full `cascade verify` before any "
                     "submission request.",
+        }
+
+    def _screen_candidate(self, args: dict[str, Any]) -> Any:
+        candidate = _candidate_path(self.root, args.get("candidate_path"))
+        king = _candidate_path(self.root, args.get("king_path")
+                               or "generators/king-control")
+        if not king.is_dir():
+            raise ToolError(
+                f"{king} does not exist; fetch the king first with "
+                "fetch_generator(ref=<summary.king_gen_ref>, out_name='king-control')"
+            )
+        report_path = (self.root / SCREEN_DIR /
+                       f"{candidate.name}--vs--{king.name}.json")
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        argv = [_interpreter(self.root), "-m", "miner.screen", str(candidate),
+                "--king", str(king),
+                "--n-series", str(int(args.get("n_series", 256) or 256)),
+                "--seed", str(int(args.get("seed", 0) or 0)),
+                "--json", str(report_path)]
+        prior = args.get("prior_king_path")
+        if prior:
+            argv += ["--prior-king", str(_candidate_path(self.root, prior))]
+        for claim in args.get("claims") or []:
+            argv += ["--claim", str(claim)]
+        try:
+            result = subprocess.run(
+                argv, cwd=self.root, capture_output=True, text=True,
+                timeout=SCREEN_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"screen timed out after {SCREEN_TIMEOUT}s") from None
+        report = read_json(report_path) if report_path.is_file() else {}
+        if not report:
+            raise ToolError(
+                f"screen exited {result.returncode} without a report: "
+                f"{(result.stderr or result.stdout)[-1000:]}"
+            )
+        return {
+            "verdict": report.get("verdict"),
+            "exit_code": result.returncode,
+            "report_path": str(report_path.relative_to(self.root)),
+            "report": report,
+            "note": "A `measurable` verdict licenses a paired GPU eval; it does "
+                    "not predict the duel. Only miner.evaluate + miner.analyze "
+                    "on a same-batch control can.",
         }
 
     def _get_improve_request(self, args: dict[str, Any]) -> Any:

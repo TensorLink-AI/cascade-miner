@@ -1,0 +1,89 @@
+# cascade-miner
+
+> Harness for competing on the Bittensor **cascade** subnet (netuid 91, finney).
+> We submit a purely-algorithmic synthetic time-series generator; the subnet
+> owner trains one fixed forecaster on our corpus and scores it against the
+> reigning king's on a private, rotating held-out set. Model, seeds,
+> initialisation and compute are identical on both sides — **the generator is
+> the only variable.**
+
+Read this file first if you are an agent joining cold; it is a map, not the
+authority. `AGENTS.md` and `CLAUDE.md` are the operating instructions and win
+over anything here. Where prose disagrees with `notes/upstream-state.json`, the
+snapshot is right — it is generated from the reference clone, prose is not.
+
+Four rules that cost money or a round when broken:
+
+- **Never** rent a pod, create or register a hotkey, or submit on-chain.
+  Request it through `runs/agent-request.json` (or the `request_action` tool)
+  and let the controller's approval gate decide. Never touch wallet secrets.
+- **Never** edit the read-only Cascade reference clone at `$CASCADE_DIR`
+  (default `/root/cascade`). Pull and reinstall it; never modify it.
+- A hotkey that enters a heat is **burned** — submissions are one-shot and cost
+  a re-registration. Screen and score locally first.
+- State the seed count and noise floor with every number, and say plainly when
+  a result is null. A difference inside the noise floor is not a finding.
+
+## Start here
+
+- [AGENTS.md](AGENTS.md): the operating brief — environment, privilege
+  boundary, agent backends, and the typed MCP tool surface.
+- [CLAUDE.md](CLAUDE.md): the same contract in rule form, plus the method
+  discipline every experiment is held to.
+- [README.md](README.md): human-facing setup, the full loop, and the failure
+  modes that have actually cost rounds.
+- [docs/SETUP.md](docs/SETUP.md): first-time host setup.
+
+## What we are competing on
+
+- [notes/CONTRACT.md](notes/CONTRACT.md): the submission contract distilled —
+  hard requirements, round mechanics, warm start, deploy protection.
+- [notes/BUDGET.md](notes/BUDGET.md): how the training budget is derived.
+- [notes/METHOD.md](notes/METHOD.md): canonical, result-free evaluation
+  method — pairing, component storage, controls, screening, per-source
+  diagnosis.
+- [notes/EXPERIMENTS.md](notes/EXPERIMENTS.md): what has been tried, with
+  hypotheses and outcomes.
+- [notes/UPSTREAM.md](notes/UPSTREAM.md) and
+  [notes/upstream-state.json](notes/upstream-state.json): **generated** from
+  the reference clone by `scripts/upstream_state.py`. Never hand-edit them.
+
+## The code
+
+- [miner/screen.py](miner/screen.py): free pre-GPU screen of a candidate corpus
+  against the king's — contract gates, per-feature dose in units of the
+  generator's own seed noise, coverage traded away, and claim carriage. Rules
+  spending out; never predicts a duel.
+- [miner/evaluate.py](miner/evaluate.py): train one arm at one seed, saving the
+  per-window score components the verdict is computed from.
+- [miner/analyze.py](miner/analyze.py): geomean plus the paired
+  cluster-bootstrap lower confidence bound against the king.
+- [miner/controller.py](miner/controller.py): watches upstream and round
+  receipts, triggers improvement passes, owns the approval queue.
+- [miner/mcp_server.py](miner/mcp_server.py): the harness as MCP tools —
+  `get_brief`, `miner_status`, `run_quick_verify`, `screen_candidate`,
+  `fetch_generator`, `log_experiment`, `report_issue`, `request_action`.
+- [miner/submit.py](miner/submit.py), [miner/rounds.py](miner/rounds.py):
+  deploy path and the real commit deadline (reveal minus a safety buffer, not
+  the epoch boundary).
+- [generators/candidate](generators/candidate): the deployable submission —
+  exactly `generator.py`, `config.json`, `requirements.txt`.
+
+## Orientation commands
+
+All read-only, all free:
+
+```bash
+bash scripts/setup.sh --check                     # setup, verified in place
+.venv/bin/python -m miner.status --doctor --json  # checklist with a fix per stage
+.venv/bin/python scripts/quick_verify.py generators/candidate
+.venv/bin/python -m miner.screen generators/candidate --king generators/king-control
+```
+
+## Optional
+
+- [schemas/](schemas/): file contracts for agent requests, approvals, the
+  experiment ledger, and the issue tracker.
+- [skills/cascade-miner/SKILL.md](skills/cascade-miner/SKILL.md): the same
+  operating context packaged for sessions that load skills.
+- [ops/](ops/): operator-owned wallet wrappers. Agents never invoke these.

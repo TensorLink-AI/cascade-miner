@@ -3,7 +3,9 @@
 This repository is designed to be operated by any capable coding agent. Read
 `CLAUDE.md`, `notes/CONTRACT.md`, `notes/BUDGET.md`, `notes/METHOD.md`, and
 `notes/EXPERIMENTS.md` before changing a generator. For first-time setup, see
-`docs/SETUP.md`.
+`docs/SETUP.md`. `llms.txt` is a one-page map of all of them for an agent
+joining cold — a routing index, not an authority: this file and `CLAUDE.md`
+win wherever they disagree.
 
 ## Environment
 
@@ -42,6 +44,14 @@ generator work: designing against a stale contract wastes the round.
 - Keep each pass bounded to one stated hypothesis and record it in
   `notes/EXPERIMENTS.md`.
 - Run static verification and inexpensive deterministic checks.
+- Screen before requesting paid work. `python -m miner.screen <candidate>
+  --king generators/king-control --claim <family>+` compares the corpus with
+  the king's in units of the generator's own seed noise. A `blocked` verdict
+  means fix it; `undosed` means a paired eval would return a null, so raise the
+  dose rather than spending; a failing `--claim` means the corpus does not
+  carry the mechanism you believe you added. A `measurable` verdict licenses a
+  paid evaluation — it does not predict the duel, and must never be reported as
+  evidence of an improvement.
 - Do not claim an improvement without comparable measured results.
 - Request privileged work through `runs/agent-request.json`. Allowed actions
   are `gpu_evaluation`, `create_hotkey`, `register_hotkey`, and
@@ -62,8 +72,11 @@ If your session supports MCP, prefer the typed tool surface over shelling into
 claude mcp add cascade-miner -- .venv/bin/python -m miner.mcp_server
 ```
 
-Key tools: `miner_status` and `get_brief` to orient, `run_quick_verify` for
-free local checks, `list_heat_entrants` and `fetch_generator` to study public
+Key tools: `miner_status` and `get_brief` to orient, `run_quick_verify` and
+`screen_candidate` for free local checks (the latter reports contract gates,
+per-feature dose against the king's corpus, the coverage a change trades away,
+and whether the corpus carries the claims you make for it),
+`list_heat_entrants` and `fetch_generator` to study public
 generators from completed rounds (past kings and heat entrants — never submit
 someone else's work), `log_experiment`/`list_experiments` for the structured
 ledger (`runs/experiments.jsonl` — record the narrative in
