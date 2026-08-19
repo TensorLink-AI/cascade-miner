@@ -40,6 +40,15 @@ class MethodDocumentationTests(unittest.TestCase):
         brief = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("does not predict the duel", brief)
 
+    def test_campaign_docs_keep_the_boundaries_explicit(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("miner.campaign", readme)
+        self.assertIn("campaign never submits", readme)
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("campaign_pass", agents)
+        self.assertIn("miner/campaign.py",
+                      (ROOT / "llms.txt").read_text(encoding="utf-8"))
+
     def test_llms_index_points_at_files_that_exist(self):
         import re
 

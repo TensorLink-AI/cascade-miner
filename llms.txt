@@ -54,6 +54,9 @@ Four rules that cost money or a round when broken:
   against the king's — contract gates, per-feature dose in units of the
   generator's own seed noise, coverage traded away, and claim carriage. Rules
   spending out; never predicts a duel.
+- [miner/campaign.py](miner/campaign.py): goal-driven loop — improve → screen →
+  gated eval → verdict with measured feedback per pass, until the candidate is
+  competitive or a budget/stall/deadline stops it. Never rents or submits.
 - [miner/evaluate.py](miner/evaluate.py): train one arm at one seed, saving the
   per-window score components the verdict is computed from.
 - [miner/analyze.py](miner/analyze.py): geomean plus the paired

@@ -97,6 +97,18 @@ When a `policy.toml` exists, autonomous mode is bounded by per-action caps
 (runs and estimated hours per trailing 24h). A declined action queues for
 human approval; it is not an error, and not a loophole to work around.
 
+## Campaign mode
+
+`python -m miner.campaign` runs the goal-driven loop: it spawns you (or another
+backend) for each improvement pass, gates paid evaluation on the screen, runs
+the paired eval through the same approval boundary, computes the real
+paired-bootstrap verdict, and hands the next pass the numbers. If your session
+receives a `campaign_pass` event, read its `last_pass` before changing
+anything — it contains the previous screen report or eval verdict — and do
+**not** write `runs/agent-request.json`; the campaign gates evaluation itself.
+Reaching the goal queues a human-gated submission request; the campaign never
+submits.
+
 ## Agent backends
 
 The improvement hook (`scripts/improve_candidate.py`) spawns a non-interactive
