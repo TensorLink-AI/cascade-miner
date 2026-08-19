@@ -118,6 +118,14 @@ exits 1). If nobody answers within `CASCADE_IMPROVE_RESPONSE_TIMEOUT`
 
 Do the work first, respond second — the response ends the pass.
 
+## Campaign mode
+
+When the operator runs `python -m miner.campaign`, each improvement request you
+receive is a `campaign_pass` event. Its `last_pass` field carries the previous
+pass's screen report or paired-eval verdict, and `budget` says what remains.
+Read the numbers, make one change that answers them, and do not write
+`runs/agent-request.json` — the campaign screens and gates evaluation itself.
+
 ## What this skill deliberately does not wrap
 
 There is no `eval.sh`. Paid evaluation is an approval boundary, not a

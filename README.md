@@ -72,6 +72,8 @@ miner/
   pods.py        rent (-c 1), provision, assert deps, TTL guard, results puller
   screen.py      free pre-GPU screen: contract gates, dose vs the king's corpus,
                  coverage traded away, and whether the corpus carries your claims
+  campaign.py    goal-driven loop: improve -> screen -> gated eval -> verdict,
+                 with measured feedback per pass, until competitive or out of budget
   evaluate.py    train N seeds x M snapshots; saves per-window score components
   analyze.py     live-metric geomean + paired cluster-bootstrap LCB vs the king
   submit.py      prepare -> verify -> upload -> commit --ref -> confirm reveal
@@ -340,6 +342,62 @@ and the submission is rejected every round while the on-chain commit looks fine.
 
 Use a fresh random repo name per deploy so content stays as hidden as the
 timelocked pointer.
+
+## Campaign mode: run until competitive
+
+The controller reacts to upstream events; a **campaign** pursues a goal. It
+drives improve → screen → paid-eval → verdict in a loop, feeding each
+improvement pass the numbers the previous pass earned, until the candidate is
+competitive or a budget stops it:
+
+```bash
+# human mode: every paid eval still waits for your approval
+.venv/bin/python -m miner.campaign --mode human --max-gpu-hours 12
+
+# autonomous mode: requires policy.toml; caps pause the loop, never overspend
+.venv/bin/python -m miner.campaign --mode autonomous \
+    --max-gpu-hours 24 --max-passes 20 --deadline-hours 48 \
+    --screen-args '--n-series 512'
+```
+
+What one pass does, and what it can never do:
+
+- **Improve** runs the same agent hook as the controller
+  (`scripts/improve_candidate.py`, so `hermes`/`claude`/`codex`/`hermes-native`
+  all work). The event it receives carries the goal, the remaining budget, and
+  the previous pass's screen report or eval verdict — the agent iterates on
+  measurements, not blind.
+- **Free gates before money**: the candidate must have actually changed, and
+  `miner.screen` must say `measurable` with all claims carried. `blocked`,
+  `undosed`, or a failed claim costs nothing and becomes the next pass's
+  feedback.
+- **Paid evals go through the same approval queue as everything else.** Human
+  mode blocks until you `--approve`/`--reject`. Autonomous mode consults
+  `policy.toml` (required) and, when a 24h cap is exhausted, waits for the
+  window instead of exceeding it. The campaign never rents hardware itself —
+  it executes `CASCADE_APPROVED_EVAL_COMMAND` exactly as the controller would,
+  and its spends draw down the same policy allowance.
+- **The verdict is the real one**: `miner.analyze` recomputed from saved
+  per-window components with the live metric. Competitive means mean paired
+  LCB ≥ target (default: the live `win_margin` from the upstream snapshot)
+  over at least `--min-pairs` paired runs.
+- **Reaching the goal queues a `submit_candidate` approval and stops.** The
+  campaign never submits; that boundary stays human.
+
+It also stops on: GPU-hour budget, pass limit, deadline, consecutive
+unmeasurable passes (the loop is stalled — a human should look), repeated hook
+failures, or the reigning king changing mid-campaign (all prior verdicts were
+against a dethroned control). State lives in `runs/campaign.json`; a killed
+campaign resumes with its history and spend intact.
+
+Do not run a campaign at the same time as a controller configured to execute
+approvals — they would race for the same approved requests. One executor at a
+time.
+
+A local `goal_met` is necessary, never sufficient: the validator's pool is
+private and rotating, the heat has other entrants, and the duel adds training
+noise you did not sample. Treat the queued submission as "worth a human
+decision", not "will win".
 
 ## Continuous controller
 
