@@ -41,14 +41,22 @@ Perform one bounded improvement pass:
    and controller state.
 3. Create or improve a single deployable candidate under generators/candidate.
    A candidate must contain generator.py, config.json, and requirements.txt.
-4. Run static verification and inexpensive deterministic checks. When another
-   capability is needed, write runs/agent-request.json with one action from
+4. Run static verification and inexpensive deterministic checks.
+5. Screen the corpus before asking for paid work:
+   python -m miner.screen generators/candidate --king generators/king-control
+   --claim <family>+ for each property you believe the change adds. A `blocked`
+   verdict must be fixed; `undosed` means the change is too small for a paired
+   eval to resolve, so raise the dose instead of requesting one; a failing claim
+   means the generator does not do what you think. A `measurable` verdict
+   licenses the request and is not evidence of an improvement. Quote its numbers
+   in the request's reason.
+6. When another capability is needed, write runs/agent-request.json with one action from
    gpu_evaluation, create_hotkey, register_hotkey, or submit_candidate, plus a
    reason, candidate_path, and optional estimated_hours. Example:
    {{"action":"gpu_evaluation","reason":"...",
      "candidate_path":"generators/candidate","estimated_hours":1}}.
    Never execute these privileged actions yourself.
-5. Record the hypothesis and checks in notes/EXPERIMENTS.md without claiming an
+7. Record the hypothesis and checks in notes/EXPERIMENTS.md without claiming an
    unmeasured score improvement.
 
 Keep the repository focused and leave the changes in the working tree for

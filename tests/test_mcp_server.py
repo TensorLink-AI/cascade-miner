@@ -67,7 +67,7 @@ class ProtocolTests(ServerHarness):
             "list_heat_entrants", "fetch_generator",
             "list_approvals", "request_action", "get_policy",
             "log_experiment", "list_experiments",
-            "report_issue", "list_issues", "run_quick_verify",
+            "report_issue", "list_issues", "run_quick_verify", "screen_candidate",
             "get_improve_request", "respond_improve_request", "get_brief",
         })
 
@@ -324,6 +324,53 @@ class FetchGeneratorTests(ServerHarness):
                 "ref": "hippius://king", "out_name": "study"}))
         self.assertFalse(payload["ok"])
         self.assertIn("permission denied", payload["stderr"])
+
+
+class ScreenCandidateTests(ServerHarness):
+    def setUp(self):
+        super().setUp()
+        (self.root / "generators/king-control").mkdir(parents=True)
+
+    def run_screen(self, arguments: dict, *, verdict: str = "measurable",
+                   code: int = 0):
+        """Patch out the subprocess and drop the report it would have written."""
+        def fake_run(argv, **kwargs):
+            destination = Path(argv[argv.index("--json") + 1])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps({"verdict": verdict}), encoding="utf-8")
+            self.argv = argv
+            return CompletedProcess(argv, code, stdout="ran", stderr="")
+
+        with patch.object(mcp_server.subprocess, "run", side_effect=fake_run):
+            return self.call("screen_candidate", arguments)
+
+    def test_screen_runs_the_module_and_returns_the_report(self):
+        payload = self.payload(self.run_screen(
+            {"n_series": 64, "claims": ["regime+"], "seed": 3}))
+        self.assertEqual(payload["verdict"], "measurable")
+        self.assertEqual(payload["report"]["verdict"], "measurable")
+        self.assertEqual(payload["report_path"],
+                         "runs/screen/candidate--vs--king-control.json")
+        self.assertIn("-m", self.argv)
+        self.assertIn("miner.screen", self.argv)
+        self.assertEqual(self.argv[self.argv.index("--n-series") + 1], "64")
+        self.assertEqual(self.argv[self.argv.index("--seed") + 1], "3")
+        self.assertEqual(self.argv[self.argv.index("--claim") + 1], "regime+")
+
+    def test_undosed_is_reported_not_raised(self):
+        payload = self.payload(self.run_screen({}, verdict="undosed", code=3))
+        self.assertEqual(payload["verdict"], "undosed")
+        self.assertEqual(payload["exit_code"], 3)
+
+    def test_missing_king_names_the_fetch_that_fixes_it(self):
+        result = self.call("screen_candidate", {"king_path": "generators/absent"})
+        self.assertTrue(result["isError"])
+        self.assertIn("fetch_generator", result["content"][0]["text"])
+
+    def test_paths_may_not_escape_generators(self):
+        result = self.call("screen_candidate", {"candidate_path": "../ops"})
+        self.assertTrue(result["isError"])
+        self.assertIn("generators/", result["content"][0]["text"])
 
 
 class ImproveHandshakeTests(ServerHarness):
