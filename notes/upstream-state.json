@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "90456ac",
-    "revision_date": "2026-08-15",
+    "revision": "00612cc",
+    "revision_date": "2026-08-18",
     "chain_schema_version": 1
   },
   "keys": {
@@ -84,8 +84,8 @@
     "eval.n_windows": 2000,
     "eval.num_samples": 100,
     "scoring.win_margin_start": 0.02,
-    "scoring.win_margin_end": 0.02,
-    "scoring.margin_warmup_rounds": 0,
+    "scoring.win_margin_end": 0.005,
+    "scoring.margin_warmup_rounds": 8,
     "scoring.bootstrap_B": 10000,
     "scoring.bootstrap_alpha": 0.05,
     "scoring.min_windows": 200,
@@ -240,6 +240,18 @@
       "status": "active",
       "date": "2026-08-12",
       "title": "Promotion members are selected by measured error decorrelation within the quality frontier; cascade_top_k=5 deferred to a coordinated release"
+    },
+    {
+      "id": "DEC-CA-0016",
+      "status": "active",
+      "date": "2026-08-15",
+      "title": "The dethrone margin decays with the king's tenure: reuse the affine warmup schedule in reverse, armed at release (owner-collapsed from release-then-activate)"
+    },
+    {
+      "id": "DEC-CA-0017",
+      "status": "active",
+      "date": "2026-08-15",
+      "title": "Promotion never ratchets the shared init downhill: a ripe reign with only worse-benching candidates holds the live generation"
     },
     {
       "id": "NOTE-ca-operational-invariants",
