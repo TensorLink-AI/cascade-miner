@@ -97,10 +97,20 @@ def _interpreter(root: Path) -> str:
 
 
 def default_target_lcb(root: Path) -> float:
-    """The live on-chain margin: the number the duel actually requires."""
+    """The margin a duel against a FRESH king requires (``win_margin_start``).
+
+    Since DEC-CA-0016 the dethrone margin decays with king tenure, from
+    ``win_margin_start`` down to the ``win_margin_end`` floor over
+    ``margin_warmup_rounds``. The campaign has no chain access to read the
+    live king's tenure, so it targets the conservative fresh-king bar —
+    reading ``win_margin_end`` here (as this once did, when start == end)
+    would declare "goal met" at a quarter of what a fresh king demands.
+    Attacking a long-tenured king, pass ``--target-lcb`` with the decayed
+    value instead.
+    """
     try:
         keys = json.loads((root / SNAPSHOT).read_text(encoding="utf-8"))["keys"]
-        return float(keys["scoring.win_margin_end"])
+        return float(keys["scoring.win_margin_start"])
     except (OSError, ValueError, KeyError):
         return 0.02
 
@@ -651,7 +661,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("human", "autonomous"), default="human")
     parser.add_argument("--target-lcb", type=float, default=None,
                         help="goal: mean paired-bootstrap LCB; default is the "
-                             "live win_margin from notes/upstream-state.json")
+                             "fresh-king win_margin_start from "
+                             "notes/upstream-state.json (the margin decays to "
+                             "win_margin_end over margin_warmup_rounds of king "
+                             "tenure — pass the decayed value to target a "
+                             "long-tenured king)")
     parser.add_argument("--min-pairs", type=int, default=3,
                         help="paired (seed, snapshot) runs required for a verdict")
     parser.add_argument("--max-gpu-hours", type=float, default=12.0)

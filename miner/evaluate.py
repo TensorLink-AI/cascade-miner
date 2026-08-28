@@ -47,6 +47,24 @@ def snapshot_dirs(pools_root: Path) -> list[Path]:
     return snapshots
 
 
+def live_rule_block(cfg) -> int | None:
+    """A block at which every armed, block-gated eval rule is active.
+
+    The live window draw is block-gated: the jittered mix (`[eval]
+    mix_from_block`, DEC-CA-0019) and the two-tier even-domain split
+    (`mix_tier_from_block`, DEC-CA-0032) apply only to rounds at or past their
+    activation blocks — and when active, ``mix_target_windows`` overrides the
+    requested window count outright. A local eval that passes no block replays
+    the legacy uniform draw the subnet no longer uses, so its window count,
+    composition, and noise floor all mismatch the live decision statistic.
+    Emulating "a round scored today" means the largest armed activation block;
+    None (nothing armed) makes the legacy draw correct again.
+    """
+    armed = [b for b in (cfg.eval.mix_from_block, cfg.eval.mix_tier_from_block)
+             if b and b > 0]
+    return max(armed) if armed else None
+
+
 def train_once(repo: Path, cfg, hours: float, seed: int, out_dir: Path, trainer_spec: str):
     from cascade.trainer.contract import RoundSeeds
     from cascade.trainer.main import _load_trainer
@@ -88,6 +106,11 @@ def main() -> int:
     ap.add_argument("--scores-root", type=Path, default=Path("scores"))
     ap.add_argument("--train-hours", type=float, default=1.0)
     ap.add_argument("--n-windows", type=int, default=None)
+    ap.add_argument("--block", type=int, default=None,
+                    help="epoch-boundary block the draw emulates; default = the "
+                         "largest armed [eval] activation block, so the jittered "
+                         "mix applies exactly as it would in a round scored "
+                         "today. Pass 0 to force the legacy uniform draw.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--trainer", default="cascade.trainer.toto2_trainer:Toto2Trainer")
     args = ap.parse_args()
@@ -100,6 +123,11 @@ def main() -> int:
 
     cfg = load_chain_config(args.chain_toml)
     n_win = args.n_windows or min(cfg.round.heat_n_windows, cfg.eval.n_windows)
+    block = args.block if args.block is not None else live_rule_block(cfg)
+    if block and cfg.eval.mix_target_windows:
+        print(f"jittered mix active (block={block}): draw is "
+              f"mix_target_windows={cfg.eval.mix_target_windows}, "
+              f"not the requested {n_win}", flush=True)
     name = args.repo_dir.name
     tag = f"{name}__seed{args.seed}"
 
@@ -124,12 +152,13 @@ def main() -> int:
     out_root = args.scores_root / tag
     out_root.mkdir(parents=True, exist_ok=True)
     summary = {"candidate": name, "seed": args.seed, "n_windows": n_win,
-               "checkpoint": str(ckpt), "meta": meta, "per_snapshot": []}
+               "draw_block": block, "checkpoint": str(ckpt), "meta": meta,
+               "per_snapshot": []}
 
     for snap in snaps:
         try:
             src = window_source_from_dir(snap, cfg, label=f"dir={snap}")
-            windows = src.windows_for_round(args.seed, n_win)
+            windows = src.windows_for_round(args.seed, n_win, block=block)
             scores = evaluate_checkpoint(
                 ckpt, windows, num_samples=cfg.eval.num_samples, device=args.device
             )
