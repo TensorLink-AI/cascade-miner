@@ -58,8 +58,9 @@ Consequences that should drive every design decision:
 | channels | `max_channels = 1` (1-D `(L,)`; `(C,L)` schema reserved) |
 | count | `generate(n)` yields **exactly** `n` |
 | finiteness | no NaN/inf; `max_abs_value = 0.0` ⇒ float32 ceiling |
-| corpus cap | `max_total_points = 2e9`; `corpus_n_series = 16384` per run |
-| generate budget | `max_generate_seconds = 1800`, `max_memory_mb = 4096` |
+| carrier | `interface_version = 1`: yield a bare array **or** a record with `values` only; reserved names (`mask`, `start`, `freq`, `group_id`, `roles`, …) hard-rejected until a release consumes them (DEC-CA-0020) |
+| corpus cap | `max_total_points = 2e9`; materialised drains (`cache_reuse`, `cascade verify`) stop at `corpus_target_points = 67_108_864` = 16384×4096 — spend it in any shape inside the length band (DEC-CA-0031); `corpus_n_series = 16384` stays the stream/probe count |
+| generate budget | `max_generate_seconds = 7200` batch drain — CPU rlimit + wall, and RLIMIT_CPU sums across threads, so single-thread your BLAS; `stream_stall_seconds = 1800` between series when streaming; `max_memory_mb = 4096` |
 | repo size | `max_repo_mb = 128`, **code only** |
 | deps | hash-locked `pkg==ver --hash=sha256:<64hex>`, ≤ 16 packages |
 
@@ -93,22 +94,46 @@ asyncio.subprocess, cascade.trainer, cascade.validator, cascade.shared.chain`.
 - Two stages: **heat** (every challenger trained `heat_train_hours = 1.0` at
   `screen_size = toto2-4m`, top `finalists = 1` promoted) → **final** (king +
   finalist trained to `target_train_hours = 3.0` on `throne_sizes`).
-- The heat now screens on **`heat_n_windows = 2000`** — the full `[eval]`
-  window count, raised from 256 on 2026-08-07 because the short screen was
-  noisy near the top. Our local screen should match it (`miner/evaluate.py`
-  reads the key, so it follows a reinstall automatically), at ~8× the CPU
-  cost per checkpoint: any heat noise floor we measured under 256 windows is
-  no longer the live one.
-- `finalists = 1` today, but DEC-CA-0012 has landed **inert** upstream: when
-  the screen cannot separate its top entrants, the tied set advances and
-  *duels as a cohort* under an `α/k` per-challenger correction. The code is in
-  `cascade/eval/heat.py` (`tied_set`, `lcb_vs`); only the config still says 1.
-  Treat "only the single best challenger reaches the duel" as a value to check,
-  not a law.
+- The heat asks for **`heat_n_windows = 2000`** windows (raised from 256 on
+  2026-08-07), but since the jittered mix armed (next bullet) the draw itself
+  returns `mix_target_windows = 1200` — the mix overrides the requested size
+  outright, for the heat and the duel alike. Our local screen follows a
+  reinstall automatically (`miner/evaluate.py` reads the keys); any heat noise
+  floor measured under a different window count is no longer the live one.
+- **The eval draw is jittered** (DEC-CA-0019, live for rounds from block
+  8895600 = 2026-08-21 08:30 UTC): a Dirichlet domain mix around uniform
+  (`mix_jitter_alpha = 4`), a salted-hash series bag
+  (`mix_series_bag_frac = 0.7`), draw size 1200. From block 8942400 the split
+  is two-tier even-by-domain (DEC-CA-0032): scarce domains draw at capacity,
+  the rest split evenly under the tight `mix_tier_jitter_alpha = 75` (±2–3pp).
+  The realised composition publishes as an unsigned `composition` manifest
+  block. Round-to-round score variance now includes deliberate mix rotation —
+  and distribution-matching any single round's mix is even less viable.
+- `finalists = 1` is now only the legacy key: DEC-CA-0012 is **armed**
+  (2026-08-20, `max_finalists = 3`). A leader the screen statistically
+  separated advances alone; a tied top advances *as a cohort* (capped at 3)
+  and the validator judges the whole cohort under a per-challenger `α/k`
+  quantile correction, crowning the best point estimate among margin-clearers.
+  The tie run-off stays `tie_runoff_windows = 0` while the jittered mix is
+  active (its incremental windows assume a permutation-prefix draw, which the
+  jitter is not), so a tied set advances capped, without re-scoring. Being
+  statistically tied with the leader is now enough to reach the duel.
 - Verdict: paired-bootstrap LCB of geomean(WQL, MASE) **pooled across sizes**,
   finalist vs king; per DEC-CA-0009 the WQL half is a per-window geomean (zero
   `sum|y|` windows masked from that half, not floored). `dethrone_cp = 1` —
   one decisive round takes the throne.
+- The dethrone margin **decays with king tenure** (DEC-CA-0016, armed at
+  release 2026-08-15): `win_margin_start = 0.02` against a fresh king, falling
+  affinely to `win_margin_end = 0.005` over `margin_warmup_rounds = 8` (~4 days
+  at the 12h cadence) and held at the floor forever. Tenure survives warm-start
+  promotion, so a long-held throne is 4× cheaper to attack than a fresh one —
+  time challenges accordingly.
+- The warm-start init itself is scored as a **shadow baseline** (DEC-CA-0034,
+  shadow since 2026-08-27): the heat publishes it as a standings row
+  (`init_baseline`) and the validator records init-floor fields in the receipt.
+  Log-only — verdicts are unchanged — but it is the number that says how much a
+  corpus adds over the shared init, and a duel-side enforcing floor is the
+  stated next step.
 - `one_submission_per_hotkey = true` — **a hotkey that enters a heat is burned
   and must re-register.** Submissions are expensive. Score locally first.
 - Dedup is `enforce` on **exact identity only** (same tree / normalised tokens /
@@ -160,10 +185,24 @@ asyncio.subprocess, cascade.trainer, cascade.validator, cascade.shared.chain`.
   a round drew. Two implications for `notes/METHOD.md` discipline — a control
   must be trained in the *same* round-init regime as its arm, and cross-round
   comparisons now carry an extra source of variance we did not have before.
-- DEC-CA-0014 (staged, **not built yet**) keeps a from-scratch signal alive:
-  a periodic shadow scratch control, then a reseed valve admitting scratch
-  checkpoints through the same quality floor. Watch for stage 1 landing — it
-  is the number that tells us whether the lineage is still compounding.
+- **The training recipe changed under warm start.** `lr_schedule = "wsd"`
+  (DEC-CA-0018, flipped 2026-08-14): warmup runs only on a generation-start
+  (from-scratch) run, warm-started rounds re-enter FLAT at base_lr, and
+  optimizer state (`optimizer.safetensors`) survives the round boundary. From
+  block 8942400 (r47's epoch, 2026-08-28) the DEC-CA-0035+0033 recipe cut is
+  live: Toto2-aligned optimizer constants, warm-started runs at
+  `warm_lr_scale = 0.125`, `ema_decay = 0.999` — the **EMA weights are the
+  scored artifact** — and `gen_seed_mix = 3`: the corpus is drawn as three
+  interleaved derived seeds (~√3 less generation-seed noise; the per-seed
+  determinism contract on our generator is unchanged). Any noise floor or A/B
+  measured under the old recipe is not the live one (Rule 3 in `CLAUDE.md`).
+- DEC-CA-0014 stage 1 is **built** (2026-08-15): a shadow scratch control —
+  `[telemetry] scratch_shadow_every_rounds` trains the king's generator from
+  scratch every M-th warm round and publishes signed `benchmarks/scratch/`
+  reports, telemetry only. Mainnet still ships 0 (unarmed; testnet validated at
+  M=2). When it arms, that stream is the number that tells us whether the
+  lineage is still compounding — and stage 2's reseed valve admits scratch
+  checkpoints through the same quality floor.
 
 ## Submission protection
 
@@ -228,4 +267,4 @@ What still needs a human (or an agent) per sync:
 4. Add a pin to `test_stale_references.py` whenever a sync catches something
    this file said wrongly — that is how the alarm gets sharper.
 
-Last synced: 2026-08-16, cascade `90456ac`.
+Last synced: 2026-08-28, cascade `9401405`.

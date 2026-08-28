@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "00612cc",
-    "revision_date": "2026-08-18",
+    "revision": "9401405",
+    "revision_date": "2026-08-28",
     "chain_schema_version": 1
   },
   "keys": {
@@ -13,10 +13,14 @@
     "generator.min_length": 64,
     "generator.max_length": 4096,
     "generator.max_total_points": 2000000000,
-    "generator.max_generate_seconds": 1800,
+    "generator.corpus_target_points": 67108864,
+    "generator.max_generate_seconds": 7200,
+    "generator.stream_stall_seconds": 1800,
     "generator.max_memory_mb": 4096,
     "generator.max_repo_mb": 128,
     "generator.max_channels": 1,
+    "generator.interface_version": 1,
+    "generator.max_payload_bytes": 400000000000,
     "generator.max_abs_value": 0.0,
     "generator.reject_constant": false,
     "generator.max_dup_fraction": 0.05,
@@ -63,6 +67,9 @@
     "round.heat_n_windows": 2000,
     "round.heat_num_samples": 100,
     "round.finalists": 1,
+    "round.max_finalists": 3,
+    "round.tie_runoff_windows": 0,
+    "round.init_gate_mode": "shadow",
     "round.screen_size": "toto2-4m",
     "round.throne_sizes": [
       "toto2-4m"
@@ -78,11 +85,17 @@
     "training.max_train_seconds": 10800,
     "training.corpus_mode": "stream_cpu",
     "training.expected_gpu": "NVIDIA L40S",
-    "training.train_image_digest": "sha256:0b90d44b7ca11c2c2964bc4df687033b489cdc8127a8dcbdb4c91303163b6f57",
+    "training.train_image_digest": "sha256:3c373d5b7d425fabb705ea009e3f11207114e5e32f80194c437d3b266076df4f",
     "training.context_length": 4096,
     "training.horizon": 64,
+    "training.warm_lr_scale": 0.125,
+    "training.ema_decay": 0.999,
+    "training.gen_seed_mix": 3,
     "eval.n_windows": 2000,
     "eval.num_samples": 100,
+    "eval.mix_from_block": 8895600,
+    "eval.mix_target_windows": 1200,
+    "eval.mix_tier_from_block": 8942400,
     "scoring.win_margin_start": 0.02,
     "scoring.win_margin_end": 0.005,
     "scoring.margin_warmup_rounds": 8,
@@ -93,6 +106,8 @@
     "scoring.dethrone_cp": 1,
     "scoring.gift_gate_mode": "off",
     "scoring.gift_gate_tolerance": 0.03,
+    "scoring.init_gate_mode": "shadow",
+    "scoring.margin_mode": "level",
     "scoring.reward_prior_kings": 4,
     "scoring.king_decay": 0.5,
     "scoring.cascade_enabled": true,
@@ -115,8 +130,16 @@
     "eval.gift_gate_num_samples",
     "eval.gift_gate_timeout_s",
     "eval.horizon",
+    "eval.mix_block_slots",
+    "eval.mix_class_keep_frac",
+    "eval.mix_jitter_alpha",
+    "eval.mix_series_bag_frac",
+    "eval.mix_tier_jitter_alpha",
     "eval.run_benchmarks",
     "eval.window_pool",
+    "generator.channel_corr_mode",
+    "generator.max_channel_corr",
+    "generator.max_missing_frac",
     "generator.sandbox_image",
     "generator.sandbox_mode",
     "generator.sandbox_python",
@@ -130,10 +153,21 @@
     "round.genesis_generator_ref",
     "round.heat_guard_factor",
     "round.heat_guard_floor_seconds",
+    "round.heat_infra_requeues",
+    "round.tie_runoff_phase_seconds",
     "scoring.burn_uid",
+    "scoring.contract_from_block",
+    "scoring.declared_contract_from_block",
     "scoring.gift_gate_min_configs",
+    "scoring.margin_increment_floor",
+    "scoring.prior_contract_digest",
     "subnet.description",
     "subnet.name",
+    "training.accepted_fields",
+    "training.adamw_beta1",
+    "training.adamw_beta2",
+    "training.adamw_lr_scale",
+    "training.allow_future_known",
     "training.base_arch_digest",
     "training.base_lr",
     "training.batch_size",
@@ -141,16 +175,20 @@
     "training.cpm_p_max",
     "training.d_ff",
     "training.d_model",
+    "training.grad_clip",
     "training.head_dim",
     "training.input_transform",
     "training.lr_schedule",
     "training.masking",
     "training.mlp_expansion",
+    "training.muon_momentum",
+    "training.muon_row_beta2",
     "training.num_heads",
     "training.num_layers",
     "training.num_quantiles",
     "training.optimizer",
     "training.patch_size",
+    "training.real_corpus_ref",
     "training.train_seed_salt",
     "training.umup_base_d_model",
     "training.warmup_fraction",
@@ -252,6 +290,114 @@
       "status": "active",
       "date": "2026-08-15",
       "title": "Promotion never ratchets the shared init downhill: a ripe reign with only worse-benching candidates holds the live generation"
+    },
+    {
+      "id": "DEC-CA-0018",
+      "status": "active",
+      "date": "2026-08-14",
+      "title": "Warm-start recipe: WSD learning-rate schedule (warmup once per generation, flat across rounds) + optimizer-state continuity in the checkpoint"
+    },
+    {
+      "id": "DEC-CA-0019",
+      "status": "active",
+      "date": "2026-08-20",
+      "title": "The per-round eval draw is jittered — composition unpredictable, equal-weight per domain in expectation, block-gated activation"
+    },
+    {
+      "id": "DEC-CA-0020",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "The submission carrier becomes an extensible series record — settled once, payload-free, before any gap opens"
+    },
+    {
+      "id": "DEC-CA-0021",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "Time anchor (start, freq): reserved in the carrier now, consumed by nothing — the fixed model is calendar-free by pinned architecture"
+    },
+    {
+      "id": "DEC-CA-0022",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "The length cap does not foreclose long-range priors — long CONTEXT is deferred to the 22M size seam and costed there"
+    },
+    {
+      "id": "DEC-CA-0023",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "Missingness is a parallel mask field with pinned filler — never NaN — and it is eval-gated: the pool must carry real gaps before the field is accepted"
+    },
+    {
+      "id": "DEC-CA-0024",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "For the pinned architecture, a panel IS a variate group — group_id stays reserved; panel capability rides the multivariate arm"
+    },
+    {
+      "id": "DEC-CA-0025",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "Corpus-level non-stationarity needs nothing beyond the time anchor — and the model cannot perceive it anyway; yield order is the one drift lever miners already hold"
+    },
+    {
+      "id": "DEC-CA-0026",
+      "status": "proposed",
+      "date": "2026-08-13",
+      "title": "Multivariate arms eval-first: per-series C with bucketed batching, full-freight channel pricing, roles as a record field — and the channel-drop trap is fixed before any cap raise"
+    },
+    {
+      "id": "DEC-CA-0027",
+      "status": "proposed",
+      "date": "2026-08-14",
+      "title": "Scaling past ~300M params: per-size GPU pins, size-conditional provisioning (300M+ rents H100), and a warm-start round pipeline — from-scratch-per-round ends between 22M and 100M"
+    },
+    {
+      "id": "DEC-CA-0028",
+      "status": "proposed",
+      "date": "2026-08-14",
+      "title": "Real data enters (if ever) as ONE owner-pinned shared corpus generators read — the ceiling is restated no-shipped-DATA, and the machinery ships inert so arming is a config edit"
+    },
+    {
+      "id": "DEC-CA-0029",
+      "status": "proposed",
+      "date": "2026-08-24",
+      "title": "Fork-anneal: every training run ends with a cosine decay branch — scoring layers see finished-form checkpoints, the lineage continues mid-stable"
+    },
+    {
+      "id": "DEC-CA-0030",
+      "status": "proposed",
+      "date": "2026-08-24",
+      "title": "Bench-anneal: the benchmark sidecar scores an annealed copy of each duel checkpoint — finished-form BenchScores with zero validator involvement"
+    },
+    {
+      "id": "DEC-CA-0031",
+      "status": "accepted",
+      "date": "2026-08-21",
+      "title": "GP-prior generation economics: the materialised corpus budget is denominated in POINTS (count free), the batch drain budget rises 1800 → 7200 CPU-s with the streaming stall window split off and pinned, and the relative-jitter Cholesky is documented miner-side"
+    },
+    {
+      "id": "DEC-CA-0032",
+      "status": "accepted",
+      "date": "2026-08-25",
+      "title": "Even-by-domain eval draws: pool capacity floors per domain + tightened mix jitter (alpha 4 -> 28), coordinated block-gated activation"
+    },
+    {
+      "id": "DEC-CA-0033",
+      "status": "proposed",
+      "date": "2026-08-26",
+      "title": "The measured variance bundle: EMA finished-form checkpoints, N-seed generation mix, warm-started re-warmup — shipped inert behind drop-when-default"
+    },
+    {
+      "id": "DEC-CA-0034",
+      "status": "proposed",
+      "date": "2026-08-26",
+      "title": "Init-baseline: a null baseline for KOTH — heat shadow row + duel-side dethrone floor (gift-gate shaped), shipped off"
+    },
+    {
+      "id": "DEC-CA-0035",
+      "status": "proposed",
+      "date": "2026-08-27",
+      "title": "Toto2-aligned optimizer constants + warm-start LR scale — the measured recipe that beats the converged init, shipped inert behind drop-when-default"
     },
     {
       "id": "NOTE-ca-operational-invariants",

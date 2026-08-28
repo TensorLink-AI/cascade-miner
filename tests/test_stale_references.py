@@ -188,6 +188,65 @@ class ContractMatchesUpstreamTests(TestCase):
             "notes/CONTRACT.md", "the live dedup enforcement level",
         )
 
+    def test_generate_budget_is_current(self):
+        # The 2026-08-28 sync caught the table still quoting 1800 after
+        # DEC-CA-0031 quadrupled the batch-drain budget and split off the
+        # streaming stall window — the budget decides which priors are even
+        # affordable, so a stale number mis-scopes generator design.
+        for key in (
+            "generator.max_generate_seconds",
+            "generator.stream_stall_seconds",
+            "generator.corpus_target_points",
+        ):
+            self.assert_key_stated(key)
+
+    def test_finalist_cohort_arming_is_described(self):
+        # DEC-CA-0012 armed 2026-08-20 (max_finalists = 3); these notes still
+        # called it inert and every doc promised a single finalist. Being
+        # statistically tied with the leader now reaches the duel — that
+        # changes what a heat entry is worth.
+        if self.keys["round.max_finalists"] <= 1:
+            self.skipTest("tie logic off upstream; the single-finalist framing is correct")
+        self.assert_key_stated("round.max_finalists")
+        for doc_name, doc in (
+            ("notes/CONTRACT.md", self.contract),
+            ("README.md", self.readme),
+            ("CLAUDE.md", self.claude),
+        ):
+            self.assert_omits(
+                "single best challenger", doc, doc_name,
+                "round.max_finalists > 1 upstream: a tied top advances as a cohort",
+            )
+
+    def test_margin_schedule_is_current(self):
+        # DEC-CA-0016 armed the tenure decay at release; a challenge timed
+        # against the wrong margin wastes a burned hotkey.
+        for key in (
+            "scoring.win_margin_start",
+            "scoring.win_margin_end",
+            "scoring.margin_warmup_rounds",
+        ):
+            self.assert_key_stated(key)
+
+    def test_jittered_mix_draw_size_is_stated(self):
+        # When the jittered mix is active it overrides the requested window
+        # count outright — the effective eval size is mix_target_windows, and
+        # every noise-floor statement keys off that number.
+        if not self.keys.get("eval.mix_from_block"):
+            self.skipTest("jittered mix off upstream")
+        self.assert_key_stated("eval.mix_target_windows")
+
+    def test_warm_recipe_values_are_current(self):
+        # The DEC-CA-0035+0033 cut (warm LR scale, EMA scored artifact,
+        # interleaved seed mix) resets every measured noise floor; quoting the
+        # old recipe silently invalidates cross-recipe comparisons.
+        for key in (
+            "training.warm_lr_scale",
+            "training.ema_decay",
+            "training.gen_seed_mix",
+        ):
+            self.assert_key_stated(key)
+
     def test_throughput_reference_is_current(self):
         # The token budget is derived from this number (DEC-CA-0001); quoting a
         # stale one silently mis-sizes every generate-path calculation we do.
