@@ -21,6 +21,18 @@ from pathlib import Path
 import numpy as np
 
 
+def effective_alpha(alpha: float, cohort_k: int) -> float:
+    """Per-challenger alpha in a k-challenger cohort duel (DEC-CA-0012).
+
+    Since max_finalists armed (2026-08-20) a statistically tied heat top duels
+    as a cohort, and the validator judges each challenger at ``alpha / k`` —
+    the quantile tightens, never the margin. An LCB computed at the solo alpha
+    can clear the margin and still lose the same duel judged in a cohort, so
+    size the target against the worst case you might land in.
+    """
+    return alpha / max(1, cohort_k)
+
+
 def load(scores_root: Path):
     """-> {candidate: {seed: {snapshot: npz_dict}}} plus geomean summaries."""
     runs: dict[str, dict[int, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
@@ -46,12 +58,24 @@ def main() -> int:
     ap.add_argument("--scores-root", type=Path, default=Path("scores"))
     ap.add_argument("--king", default="king_live")
     ap.add_argument("--alpha", type=float, default=0.05)
+    ap.add_argument("--cohort-k", type=int, default=1,
+                    help="challengers in the duel cohort; the LCB is computed "
+                         "at alpha/k as the validator judges a tied cohort "
+                         "(DEC-CA-0012). 1 = solo duel, today's default; the "
+                         "worst case is round.max_finalists.")
     ap.add_argument("--B", type=int, default=10000)
-    ap.add_argument("--margin", type=float, default=0.02)
+    ap.add_argument("--margin", type=float, default=0.02,
+                    help="the bar the LCB must clear; decays with king tenure "
+                         "(DEC-CA-0016) from win_margin_start to win_margin_end")
     ap.add_argument("--out", type=Path, default=Path("results/matrix.json"))
     args = ap.parse_args()
 
     from cascade.eval.bootstrap import paired_bootstrap_lcb_aggregated
+
+    alpha = effective_alpha(args.alpha, args.cohort_k)
+    if args.cohort_k > 1:
+        print(f"cohort_k = {args.cohort_k}: LCB quantile at alpha "
+              f"{args.alpha:g}/{args.cohort_k} = {alpha:g}")
 
     runs, geo = load(args.scores_root)
     if args.king not in runs:
@@ -76,7 +100,7 @@ def main() -> int:
                 lcb = paired_bootstrap_lcb_aggregated(
                     k["qloss"], k["abs_target"], k["mase"],
                     c["qloss"], c["abs_target"], c["mase"],
-                    alpha=args.alpha, B=args.B, seed=seed,
+                    alpha=alpha, B=args.B, seed=seed,
                     clusters=list(k["source"]),
                 )
                 lcbs.append(lcb)
@@ -91,6 +115,8 @@ def main() -> int:
             "frac_lcb_over_margin": float(np.mean([x > args.margin for x in lcbs])) if lcbs else None,
             "n_pairs": pairs,
             "n_seeds": len(runs[cand]),
+            "alpha": alpha,
+            "cohort_k": args.cohort_k,
         }
 
     hdr = f"{'candidate':<18}{'geomean':>10}{'vs king':>9}{'mean LCB':>10}{'min LCB':>9}{'>margin':>9}{'n':>5}"

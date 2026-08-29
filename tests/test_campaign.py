@@ -394,10 +394,15 @@ class ConfigTests(CampaignHarness):
         self.assertIn("cascade fetch", str(caught.exception))
 
     def test_default_target_comes_from_the_upstream_snapshot(self):
+        # The FRESH-KING margin, not win_margin_end: since DEC-CA-0016 armed
+        # the tenure decay, win_margin_end is the decayed floor (0.005) — a
+        # default read from it declares "goal met" at a quarter of what a
+        # fresh king demands.
         notes = self.root / "notes"
         notes.mkdir()
         (notes / "upstream-state.json").write_text(json.dumps(
-            {"keys": {"scoring.win_margin_end": 0.045}}))
+            {"keys": {"scoring.win_margin_start": 0.045,
+                      "scoring.win_margin_end": 0.005}}))
         self.assertEqual(campaign.default_target_lcb(self.root), 0.045)
         self.assertEqual(campaign.default_target_lcb(Path("/nonexistent")), 0.02)
 

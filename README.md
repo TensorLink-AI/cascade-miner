@@ -7,8 +7,10 @@ purely-algorithmic time-series generator, the owner trains a fixed forecaster on
 your corpus, and a private rotating held-out set decides whether your data
 trains a better forecaster than the reigning king's.
 
-Only the **single best** challenger from each heat reaches the duel, and it must
-clear a confidence-bound margin to take the throne. Rounds are ~12h.
+The heat's leader reaches the duel — joined by up to `max_finalists = 3` when
+the screen cannot statistically separate the top — and a challenger must clear
+a confidence-bound margin that decays with the king's tenure to take the
+throne. Rounds are ~12h.
 
 Since 2026-08-05 that training run is **warm-started**: after a ripe reign the
 subnet promotes up to three reign checkpoints and rotates rounds across them,

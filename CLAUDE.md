@@ -8,8 +8,9 @@ We submit a purely-algorithmic synthetic time-series generator to the **cascade*
 subnet (netuid 91, finney). The owner trains a fixed forecaster on our corpus and
 scores it on a private, rotating held-out set. Model, seeds, init and compute are
 identical between king and challenger — **the generator is the only variable**.
-Only the single best challenger from each heat reaches the duel, and it must
-clear a confidence-bound margin to take the throne.
+The heat's leader reaches the duel — joined by up to `max_finalists = 3` when
+the screen cannot separate the top — and a challenger must clear a
+confidence-bound margin (decaying with king tenure) to take the throne.
 
 Warm-start is armed (2026-08-05): the run starts from a promoted reign
 checkpoint, rotating across a member set, not always from random init. The duel
