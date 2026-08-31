@@ -121,11 +121,19 @@ def _lium(*args: str, timeout: int = 900) -> subprocess.CompletedProcess:
     )
 
 
-def rent(name: str, ttl_hours: int = 10, gpu: str = "RTX4090", retries: int = 8) -> None:
-    """Rent ONE single-GPU pod. `-c 1` is not optional — see module docstring.
+def rent(name: str, ttl_hours: int = 10, gpu: str = "RTX4090", retries: int = 8,
+         ready_timeout: int = 600) -> Pod:
+    """Rent ONE single-GPU pod and return it. `-c 1` is not optional — see
+    module docstring.
 
     Lium serialises rentals account-wide, so concurrent calls fail with
     "Another rental is already in progress"; retry rather than parallelise.
+
+    ``lium up`` prints nothing machine-readable on success, so the new pod is
+    found by name in ``lium ps``; callers used to have to do that search
+    themselves and it was easy to get wrong. The name must therefore be unique
+    (embed a timestamp/pid); if the search matches more than one pod this
+    refuses to guess rather than hand back somebody else's rental.
     """
     for attempt in range(1, retries + 1):
         out = _lium("up", "--gpu", gpu, "-c", "1", "--name", name,
@@ -138,8 +146,37 @@ def rent(name: str, ttl_hours: int = 10, gpu: str = "RTX4090", retries: int = 8)
             raise RuntimeError(
                 f"lium failed to rent {name}: {(out.stderr or out.stdout).strip()[-2000:]}"
             )
-        return
+        try:
+            return wait_for_pod(name, timeout=ready_timeout)
+        except Exception:
+            # The rental went through but the pod never became reachable; a
+            # discovery failure must not leave an unreferenced pod billing.
+            try:
+                stop(name)
+            except Exception as cleanup:  # noqa: BLE001
+                print(f"WARNING: could not stop unreachable pod {name}: {cleanup}",
+                      flush=True)
+            raise
     raise RuntimeError(f"could not rent {name} after {retries} attempts")
+
+
+def wait_for_pod(name: str, timeout: int = 600) -> Pod:
+    """Wait until the named pod is listed with an SSH endpoint, then return it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        matches = [pod for pod in list_pods() if pod.name == name]
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"{len(matches)} pods are named {name!r}; refusing to guess "
+                "which one was just rented — use a unique name per rental"
+            )
+        if matches:
+            return matches[0]
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"rented pod {name} did not appear in `lium ps` within {timeout}s"
+            )
+        time.sleep(5)
 
 
 def stop(name: str) -> None:
@@ -168,10 +205,17 @@ def list_pods() -> list[Pod]:
     return pods
 
 
-def assert_single_gpu() -> None:
-    """Fail loudly if any pod is multi-GPU — we only ever use one."""
+def assert_single_gpu(pod: Pod | None = None) -> None:
+    """Fail loudly on multi-GPU rentals — we only ever use one.
+
+    Given a ``pod`` this checks just that pod (the same call shape as
+    ``provision`` and friends); with no argument it audits every pod on the
+    account, which also catches a stray rental this process did not make.
+    """
     bad = []
     for r in json.loads(_lium("ps", "--format", "json", timeout=300).stdout or "[]"):
+        if pod is not None and r.get("name") != pod.name:
+            continue
         if int(r.get("gpu_count", 1)) > 1:
             bad.append((r["name"], r.get("config"), r.get("price_per_hour")))
     if bad:
@@ -230,20 +274,32 @@ def check_ttl_covers(pod: Pod, needed_hours: float) -> None:
         )
 
 
-def start_puller(pods: list[Pod], local_scores: str, every_s: int = 600) -> subprocess.Popen:
+def start_puller(pods: list[Pod], local_scores: str, every_s: int = 600,
+                 local_ckpts: str | None = None) -> subprocess.Popen:
     """Continuously pull results — start this WITH the run, never after.
 
     Pulling only on completion has cost two experiments. This copies whatever
     exists every cycle, so an expired pod costs at most one interval.
+
+    With ``local_ckpts`` set, ``ckpts/`` is mirrored too. Checkpoints are the
+    expensive artefact: a pulled checkpoint whose ``TRAINED.json`` marker made
+    it home means a re-run after a pod death skips that arm's training entirely
+    instead of paying for it twice.
     """
     lines = ["#!/bin/bash", "while true; do"]
+    mirrors = [("scores", local_scores)]
+    if local_ckpts is not None:
+        mirrors.append(("ckpts", local_ckpts))
+    for _, local_dir in mirrors:
+        os.makedirs(local_dir, exist_ok=True)
     for p in pods:
         opts = ' '.join(shlex.quote(o) for o in SSH_OPTS)
-        lines.append(
-            f'  timeout 600 ssh {opts} -p {p.port} root@{p.ip} '
-            f"'mkdir -p {REMOTE_ROOT}/scores && tar -cf - -C {REMOTE_ROOT}/scores/ .' 2>/dev/null | "
-            f'tar -xf - -C {shlex.quote(local_scores)}/ 2>/dev/null || true'
-        )
+        for remote_name, local_dir in mirrors:
+            lines.append(
+                f'  timeout 600 ssh {opts} -p {p.port} root@{p.ip} '
+                f"'mkdir -p {REMOTE_ROOT}/{remote_name} && tar -cf - -C {REMOTE_ROOT}/{remote_name}/ .' 2>/dev/null | "
+                f'tar -xf - -C {shlex.quote(local_dir)}/ 2>/dev/null || true'
+            )
     lines += [f'  sleep {every_s}', "done"]
     path = "/tmp/cascade_miner_puller.sh"
     with open(path, "w") as fh:
