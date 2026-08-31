@@ -66,6 +66,10 @@ Optional but recommended:
 | `LIUM_SSH_KEY` | lium's config, then `~/.ssh/id_ed25519` | Private key for pod access |
 | `CASCADE_PROGRESS_POLL_SECONDS` | `30` | How often a running remote evaluation is polled |
 | `CASCADE_PROGRESS_HEARTBEAT_SECONDS` | `600` | Idle interval before an elapsed/GPU line is printed |
+| `CASCADE_EVAL_PARALLEL` | `1` | Max concurrent trainings per pod (`--parallel`); 1 = strictly serial |
+| `CASCADE_WARM_MAP` | *(empty)* | Explicit `seed=warm-dir` pairing (`--warm-map "0=warm/r27,1=warm/r29"`); must cover every eval seed |
+| `CASCADE_PULL_CKPTS` | `1` | Mirror `ckpts/` home continuously alongside `scores/` |
+| `CASCADE_EVAL_RESUME` | `0` | Re-run after a pod death: skip locally-scored arms, push completed checkpoints back. Identical candidate only |
 
 **Important:** Values containing spaces must be quoted in `.env`:
 ```bash

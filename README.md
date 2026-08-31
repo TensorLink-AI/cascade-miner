@@ -415,8 +415,13 @@ The commands configured for privileged actions are the deliberate boundary
 between agent edits and real-world effects. `scripts/run-gpu-evaluation` is the
 shipped, non-interactive GPU implementation: after approval it rents exactly
 one Lium GPU, fetches the receipt-pinned king, trains king and candidate on the
-same seeds, continuously pulls scores, and terminates the pod even on failure.
-It reads `candidate_path` and `estimated_hours` from the approval context.
+same seeds, continuously pulls scores (and checkpoints), and terminates the pod
+even on failure. It reads `candidate_path` and `estimated_hours` from the
+approval context. `--candidates a,b,c` evaluates several variants against the
+one king control (with `--parallel N` trainings sharing the card),
+`--warm-map "0=warm/r27,1=warm/r29"` pins each seed to an explicit warm-start
+init for both arms, and `--resume` re-runs after a pod death without paying for
+finished arms twice — see the script docstring and `example.env`.
 
 The three `ops/` commands ship only as refusing stubs. Operators must replace
 them with reviewed wrappers appropriate to their protected wallet setup before

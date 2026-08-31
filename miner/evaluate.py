@@ -10,7 +10,11 @@ and stores the components required by the paired cluster-bootstrap LCB:
   over those components, and it cannot be reconstructed from a geomean.
 
 King and challenger must share windows to be paired, so the same `--seed` drives
-both RoundSeeds and window selection — exactly as a real round does.
+both RoundSeeds and window selection — exactly as a real round does. Under the
+warm-start regime both duellists also share the round's init; `--warm-init`
+emulates that by handing the trainer an explicit checkpoint directory, and the
+checkpoint records which init it was trained under so a re-run can never
+silently pair arms trained from different inits.
 
     python -m miner.evaluate <repo_dir> --seed 0 --chain-toml ... --pools-root ...
 """
@@ -28,23 +32,47 @@ import numpy as np
 SNAPSHOT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def snapshot_dirs(pools_root: Path) -> list[Path]:
-    """Return dated dataset snapshots, rejecting a one-level-too-high root."""
-    if not pools_root.is_dir():
-        raise ValueError(f"pools root does not exist: {pools_root}")
-    snapshots = sorted(
-        path for path in pools_root.iterdir()
+def _dated_snapshots(base: Path) -> list[Path]:
+    return sorted(
+        path for path in base.iterdir()
         if path.is_dir() and SNAPSHOT_NAME.fullmatch(path.name)
         and any(path.glob("*.npy"))
     )
-    if not snapshots:
-        nested = pools_root / "snapshots"
-        hint = f"; use --pools-root {nested}" if nested.is_dir() else ""
-        raise ValueError(
-            f"pools root {pools_root} contains no dated snapshot directories with .npy files"
-            f"{hint}"
-        )
-    return snapshots
+
+
+def snapshot_dirs(pools_root: Path) -> list[Path]:
+    """Return dated dataset snapshots, with a layout-aware error otherwise.
+
+    The recurring mistake: provisioning pushes the local pool to the pod's
+    ``.../pools/snapshots/``, while this flag wants the directory whose
+    CHILDREN are the dated snapshots — one `snapshots/` too many or too few
+    in the path is invisible in the command line. The old hint guessed a
+    literal ``snapshots/`` child whether or not it held snapshots, which sent
+    people to paths that were just as wrong. So: report what the directory
+    actually contains, and only suggest a --pools-root that has been verified
+    to hold dated snapshots (one level down, or the parent when the given
+    path IS a dated snapshot).
+    """
+    if not pools_root.is_dir():
+        raise ValueError(f"pools root does not exist: {pools_root}")
+    snapshots = _dated_snapshots(pools_root)
+    if snapshots:
+        return snapshots
+    hints = []
+    if SNAPSHOT_NAME.fullmatch(pools_root.name) and any(pools_root.glob("*.npy")):
+        hints.append(f"{pools_root} is itself a dated snapshot — "
+                     f"use --pools-root {pools_root.parent}")
+    for child in sorted(path for path in pools_root.iterdir() if path.is_dir()):
+        if _dated_snapshots(child):
+            hints.append(f"dated snapshots found one level down — "
+                         f"use --pools-root {child}")
+            break
+    contents = ", ".join(sorted(p.name for p in pools_root.iterdir())[:8]) or "<empty>"
+    raise ValueError(
+        f"pools root {pools_root} contains no dated snapshot directories with "
+        f".npy files (it contains: {contents})"
+        + ("; " + "; ".join(hints) if hints else "")
+    )
 
 
 def live_rule_block(cfg) -> int | None:
@@ -65,7 +93,38 @@ def live_rule_block(cfg) -> int | None:
     return max(armed) if armed else None
 
 
-def train_once(repo: Path, cfg, hours: float, seed: int, out_dir: Path, trainer_spec: str):
+# trainer.train keywords probed, in order, for the warm-start init directory.
+WARM_KWARG_CANDIDATES = ("init_dir", "warm_init_dir", "warm_init",
+                         "init_checkpoint", "resume_from")
+
+
+def warm_train_kwarg(trainer, explicit: str = "") -> str:
+    """The trainer.train keyword that receives the warm-start init directory.
+
+    A requested warm start must take effect or fail loudly. Silently training
+    from scratch would produce an arm whose numbers pair against a warm king
+    — a broken comparison that looks like a huge (or disastrous) result.
+    """
+    import inspect
+    params = inspect.signature(trainer.train).parameters
+    accepts_kwargs = any(p.kind is p.VAR_KEYWORD for p in params.values())
+    if explicit:
+        if explicit not in params and not accepts_kwargs:
+            raise ValueError(
+                f"trainer {type(trainer).__name__}.train has no parameter "
+                f"{explicit!r} (has: {sorted(params)})")
+        return explicit
+    for name in WARM_KWARG_CANDIDATES:
+        if name in params:
+            return name
+    raise ValueError(
+        f"--warm-init given but trainer {type(trainer).__name__}.train accepts "
+        f"none of {WARM_KWARG_CANDIDATES} (has: {sorted(params)}); pass "
+        "--warm-init-kwarg with the trainer's actual parameter name")
+
+
+def train_once(repo: Path, cfg, hours: float, seed: int, out_dir: Path, trainer_spec: str,
+               warm_init: Path | None = None, warm_kwarg: str = ""):
     from cascade.trainer.contract import RoundSeeds
     from cascade.trainer.main import _load_trainer
     from cascade.trainer.stream import open_round_stream
@@ -80,6 +139,12 @@ def train_once(repo: Path, cfg, hours: float, seed: int, out_dir: Path, trainer_
     trainer = _load_trainer(trainer_spec)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    warm_kwargs = {}
+    if warm_init is not None:
+        if not warm_init.is_dir() or not any(warm_init.iterdir()):
+            raise ValueError(f"--warm-init {warm_init} is not a non-empty directory")
+        warm_kwargs = {warm_train_kwarg(trainer, warm_kwarg): str(warm_init)}
+
     with open_round_stream(
         contract.corpus_mode, repo, seeds.generation_seed, cfg.generator,
         token_budget=token_budget, use_sandbox=False, blocked=cfg.static_guard.blocked,
@@ -87,12 +152,14 @@ def train_once(repo: Path, cfg, hours: float, seed: int, out_dir: Path, trainer_
         result = trainer.train(
             rs.series(), contract,
             training_seed=seeds.training_seed, token_budget=token_budget, out_dir=out_dir,
+            **warm_kwargs,
         )
         digest, n_series, points = rs.digest, rs.n_series, rs.total_points
     return result, {
         "corpus_digest": digest, "n_series": n_series, "total_points": points,
         "token_budget": token_budget, "train_seconds": result.train_seconds,
         "deadline_hit": points < token_budget,
+        "warm_init": warm_init.name if warm_init is not None else None,
     }
 
 
@@ -113,6 +180,15 @@ def main() -> int:
                          "today. Pass 0 to force the legacy uniform draw.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--trainer", default="cascade.trainer.toto2_trainer:Toto2Trainer")
+    ap.add_argument("--warm-init", type=Path, default=None,
+                    help="checkpoint directory the training starts from, "
+                         "emulating a warm-started round. Both arms of a "
+                         "paired comparison must receive the SAME value for "
+                         "the same --seed.")
+    ap.add_argument("--warm-init-kwarg", default="",
+                    help="trainer.train parameter that receives --warm-init; "
+                         "default: auto-detect from the trainer signature and "
+                         "fail loudly when nothing matches")
     args = ap.parse_args()
     snaps = snapshot_dirs(args.pools_root)
 
@@ -131,16 +207,26 @@ def main() -> int:
     name = args.repo_dir.name
     tag = f"{name}__seed{args.seed}"
 
+    warm_name = args.warm_init.name if args.warm_init is not None else None
     ckpt = args.ckpt_root / tag
     marker = ckpt / "TRAINED.json"
     if marker.exists():
         meta = json.loads(marker.read_text())
+        # A checkpoint trained under a different init is a different arm;
+        # reusing it silently would break the paired comparison.
+        if meta.get("warm_init") != warm_name:
+            raise SystemExit(
+                f"[{tag}] existing checkpoint was trained with "
+                f"warm_init={meta.get('warm_init')!r} but this run asks for "
+                f"{warm_name!r}; delete {ckpt} or use a different --ckpt-root")
         print(f"[{tag}] reusing existing checkpoint", flush=True)
     else:
-        print(f"[{tag}] training -> {ckpt}", flush=True)
+        print(f"[{tag}] training -> {ckpt}"
+              + (f" (warm init: {warm_name})" if warm_name else ""), flush=True)
         t0 = time.perf_counter()
         result, meta = train_once(
-            args.repo_dir, cfg, args.train_hours, args.seed, ckpt, args.trainer
+            args.repo_dir, cfg, args.train_hours, args.seed, ckpt, args.trainer,
+            warm_init=args.warm_init, warm_kwarg=args.warm_init_kwarg,
         )
         meta["wall_seconds"] = time.perf_counter() - t0
         ckpt = Path(result.local_dir)
@@ -152,8 +238,8 @@ def main() -> int:
     out_root = args.scores_root / tag
     out_root.mkdir(parents=True, exist_ok=True)
     summary = {"candidate": name, "seed": args.seed, "n_windows": n_win,
-               "draw_block": block, "checkpoint": str(ckpt), "meta": meta,
-               "per_snapshot": []}
+               "draw_block": block, "checkpoint": str(ckpt),
+               "warm_init": warm_name, "meta": meta, "per_snapshot": []}
 
     for snap in snaps:
         try:

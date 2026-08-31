@@ -3,10 +3,31 @@
 
 This non-interactive program rents paid compute. Invoke it only through an
 operator-approved or explicitly allowlisted controller action.
+
+Beyond the single-candidate paired eval it supports:
+
+* ``--candidates a,b,c`` — several variants against the one king control, on
+  one pod. ``--parallel N`` (or ``CASCADE_EVAL_PARALLEL``) runs up to N
+  trainings concurrently; the default of 1 keeps the strictly serial
+  behaviour. One training uses a small slice of the card, so an ablation
+  batch does not need a custom script any more.
+* ``--warm-map "0=warm/r27,1=warm/r29"`` (or ``CASCADE_WARM_MAP``) — an
+  EXPLICIT seed→warm-init pairing, pushed to the pod and handed to every arm
+  of that seed via ``miner.evaluate --warm-init``. Explicit because
+  index-modulo rotation (``warm_dirs[i % len(warm_dirs)]``) silently re-pairs
+  seeds when a re-run starts from a different index, breaking the paired
+  comparison.
+* ``--resume`` (or ``CASCADE_EVAL_RESUME=1``) — after a pod death, skip arms
+  whose scores already made it home and push completed local checkpoints
+  (``ckpts/<tag>/TRAINED.json``) back so their training is not paid for
+  twice. Off by default: resuming with a candidate whose source has changed
+  since the dead run would silently keep stale results, so only pass it when
+  re-running the identical candidate.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -22,6 +43,7 @@ from typing import Any
 # Polling settings for backgrounded remote training. The SSH calls made while
 # a run is in flight are short; only the run itself is long.
 LAUNCH_TIMEOUT = 300
+LAUNCH_ATTEMPTS = 4
 PROBE_TIMEOUT = 300
 MAX_CONSECUTIVE_PROBE_FAILURES = 10
 UNSAFE_LABEL = re.compile(r"[^A-Za-z0-9_.-]")
@@ -58,6 +80,32 @@ def contained_candidate(root: Path, value: object) -> Path:
     return candidate
 
 
+def parse_candidates(root: Path, context: dict[str, Any], override: str) -> list[Path]:
+    """The candidate arms: --candidates wins, else the approval context.
+
+    A bare name is shorthand for ``generators/<name>``. Every entry passes the
+    same containment check as the single-candidate path.
+    """
+    if override.strip():
+        values: list[object] = [v.strip() for v in override.split(",") if v.strip()]
+    else:
+        raw = context.get("candidate_paths")
+        if isinstance(raw, (list, tuple)) and raw:
+            values = list(raw)
+        else:
+            values = [context.get("candidate_path")]
+    candidates: list[Path] = []
+    for value in values:
+        if isinstance(value, str) and value and "/" not in value:
+            value = f"generators/{value}"
+        candidate = contained_candidate(root, value)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
+        raise ValueError("no candidate arms to evaluate")
+    return candidates
+
+
 def parse_seeds(value: str) -> list[int]:
     seeds = [int(item.strip()) for item in value.split(",") if item.strip()]
     if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
@@ -65,14 +113,61 @@ def parse_seeds(value: str) -> list[int]:
     return seeds
 
 
-def wait_for_pod(name: str, timeout: int = 600) -> pods.Pod:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        match = next((pod for pod in pods.list_pods() if pod.name == name), None)
-        if match is not None:
-            return match
-        time.sleep(5)
-    raise TimeoutError(f"rented pod {name} did not become ready within {timeout}s")
+def parse_warm_map(value: str, seeds: list[int], root: Path) -> dict[int, Path]:
+    """Explicit seed→warm-init pairing, e.g. ``0=warm/r27,1=warm/r29``.
+
+    Every eval seed must be mapped and no others: a partial map is exactly the
+    ambiguity implicit rotation had, where a re-run could pair seed 1 with a
+    different member than the run it is meant to extend. Validated before any
+    money is spent.
+    """
+    value = value.strip()
+    if not value:
+        return {}
+    mapping: dict[int, Path] = {}
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        seed_text, sep, path_text = item.partition("=")
+        if not sep or not seed_text.strip() or not path_text.strip():
+            raise ValueError(f"warm map entry {item!r} is not of the form seed=path")
+        seed = int(seed_text)
+        if seed in mapping:
+            raise ValueError(f"warm map names seed {seed} twice")
+        path = Path(path_text.strip())
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_dir() or not any(path.iterdir()):
+            raise ValueError(
+                f"warm init for seed {seed} is not a non-empty directory: {path}")
+        mapping[seed] = path
+    missing = sorted(set(seeds) - set(mapping))
+    extra = sorted(set(mapping) - set(seeds))
+    if missing or extra:
+        raise ValueError(
+            "warm map must cover the eval seeds exactly"
+            + (f"; unmapped seeds: {missing}" if missing else "")
+            + (f"; mapped but not evaluated: {extra}" if extra else ""))
+    # Warm dirs all land in REMOTE_ROOT/warm/<basename>; two different local
+    # dirs sharing a basename would silently overwrite each other on the pod.
+    by_name: dict[str, Path] = {}
+    for path in mapping.values():
+        other = by_name.setdefault(path.name, path)
+        if other != path:
+            raise ValueError(
+                f"warm dirs {other} and {path} share the basename {path.name!r}")
+    return mapping
+
+
+def parallel_arg(value: object) -> int:
+    parallel = int(value)
+    if parallel < 1:
+        raise ValueError("--parallel must be a positive integer")
+    return parallel
+
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in ("", "0", "no", "false")
 
 
 def poll_seconds() -> int:
@@ -112,16 +207,14 @@ def remote_log_tail(pod: pods.Pod, log: str, lines: int = 60) -> str:
     return (result.stdout or result.stderr).strip()[-4000:]
 
 
-def checked_remote(pod: pods.Pod, argv: list[str], timeout: int, *,
-                   label: str, say=print) -> None:
-    """Run one evaluation on the pod, detached from the SSH session.
+def launch_remote(pod: pods.Pod, argv: list[str], label: str, *, say=print) -> None:
+    """Launch one evaluation on the pod, detached, retrying transient SSH faults.
 
-    Holding a single SSH channel open for the whole run meant any dropped
-    connection abandoned training that was still happening on the pod: the
-    work continued, the harness errored, and the rented hour was wasted.
-    The command is backgrounded under ``nohup`` and its exit status written to
-    a marker file, so a broken connection costs one poll interval instead of
-    the run. Polling also gives the only visibility into a 40-minute train.
+    One SSH timeout during launch used to abort the whole run with a traceback
+    while the pod sat idle and billing. A retry must not double-launch: a
+    timed-out ssh may have executed the command anyway, so each retry first
+    probes for the log file the launch creates — if it exists, the run started
+    and polling takes over.
     """
     log, status = remote_paths(label)
     command = (
@@ -134,71 +227,140 @@ def checked_remote(pod: pods.Pod, argv: list[str], timeout: int, *,
         f"nohup sh -c {shlex.quote(wrapped)} >{log} 2>&1 </dev/null & "
         "echo CASCADE_LAUNCHED"
     )
-    started = pod.ssh(launch, timeout=LAUNCH_TIMEOUT)
-    if "CASCADE_LAUNCHED" not in started.stdout:
-        detail = (started.stderr or started.stdout).strip()[-2000:]
-        raise RuntimeError(f"could not launch remote evaluation {label}: {detail}")
-    say(f"[{label}] launched; polling {status}", flush=True)
+    detail = ""
+    for attempt in range(1, LAUNCH_ATTEMPTS + 1):
+        if attempt > 1:
+            try:
+                probe = pod.ssh(f"test -f {log} && echo CASCADE_PRESENT",
+                                timeout=PROBE_TIMEOUT)
+            except (subprocess.SubprocessError, OSError):
+                probe = None
+            if probe is not None and "CASCADE_PRESENT" in probe.stdout:
+                say(f"[{label}] earlier launch attempt did start; polling {status}",
+                    flush=True)
+                return
+        try:
+            started = pod.ssh(launch, timeout=LAUNCH_TIMEOUT)
+        except (subprocess.SubprocessError, OSError) as exc:  # noqa: BLE001
+            detail = repr(exc)
+        else:
+            if "CASCADE_LAUNCHED" in started.stdout:
+                say(f"[{label}] launched; polling {status}", flush=True)
+                return
+            detail = (started.stderr or started.stdout).strip()[-2000:]
+        say(f"[{label}] launch attempt {attempt}/{LAUNCH_ATTEMPTS} failed: {detail}",
+            flush=True)
+        if attempt < LAUNCH_ATTEMPTS:
+            time.sleep(min(30, 5 * attempt))
+    raise RuntimeError(f"could not launch remote evaluation {label}: {detail}")
 
-    probe = (
-        f"echo CASCADE_STATUS=$(cat {status} 2>/dev/null); "
-        f"echo CASCADE_LOG=$(tail -n 1 {log} 2>/dev/null); "
-        "echo CASCADE_GPU=$(nvidia-smi --query-gpu=utilization.gpu,memory.used "
-        "--format=csv,noheader 2>/dev/null | head -n 1)"
-    )
+
+def run_remote_group(pod: pods.Pod, jobs: list[tuple[list[str], str]], timeout: int,
+                     *, parallel: int = 1, say=print) -> None:
+    """Run evaluations on the pod, at most ``parallel`` at once, one poll loop.
+
+    Each job is backgrounded under ``nohup`` with its exit status written to a
+    marker file, so a broken connection costs one poll interval instead of the
+    run — holding a single SSH channel open for the whole run once meant a
+    dropped connection abandoned training that was still happening on the pod.
+
+    A job's failure stops further launches — burning GPU-hours after the
+    pairing is already broken helps nobody — but already-running jobs finish
+    and are pulled; every failure is then reported together.
+    """
+    if parallel < 1:
+        raise ValueError("parallel must be >= 1")
+    pending = [{"argv": argv, "label": label} for argv, label in jobs]
+    active: list[dict[str, Any]] = []
+    failures: list[str] = []
     interval, heartbeat = poll_seconds(), heartbeat_seconds()
     start = time.monotonic()
     deadline = start + timeout
-    failures = 0
-    reported = ""
-    last_beat = start
-    while True:
-        try:
-            result = pod.ssh(probe, timeout=PROBE_TIMEOUT)
-        except (subprocess.SubprocessError, OSError) as exc:  # noqa: BLE001
-            result, reason = None, repr(exc)
-        else:
-            reason = (result.stderr or "").strip()[-500:]
-        if result is None or result.returncode:
-            # A dropped probe says nothing about the run, which is detached.
-            failures += 1
-            if failures >= MAX_CONSECUTIVE_PROBE_FAILURES:
-                raise RuntimeError(
-                    f"lost contact with {pod.name} while running {label} "
-                    f"({failures} consecutive failed probes): {reason}"
-                )
-            say(f"[{label}] probe failed ({failures}), retrying: {reason}", flush=True)
-        else:
-            failures = 0
+    while pending or active:
+        while pending and not failures and len(active) < parallel:
+            job = pending.pop(0)
+            launch_remote(pod, job["argv"], job["label"], say=say)
+            log, status = remote_paths(job["label"])
+            now = time.monotonic()
+            job.update(log=log, status=status, probe_failures=0, reported="",
+                       started=now, last_beat=now)
+            active.append(job)
+        if failures and pending:
+            skipped = [job["label"] for job in pending]
+            say(f"not launching {skipped} after a failure in this group", flush=True)
+            pending.clear()
+        for job in list(active):
+            label = job["label"]
+            probe = (
+                f"echo CASCADE_STATUS=$(cat {job['status']} 2>/dev/null); "
+                f"echo CASCADE_LOG=$(tail -n 1 {job['log']} 2>/dev/null); "
+                "echo CASCADE_GPU=$(nvidia-smi --query-gpu=utilization.gpu,memory.used "
+                "--format=csv,noheader 2>/dev/null | head -n 1)"
+            )
+            try:
+                result = pod.ssh(probe, timeout=PROBE_TIMEOUT)
+            except (subprocess.SubprocessError, OSError) as exc:  # noqa: BLE001
+                result, reason = None, repr(exc)
+            else:
+                reason = (result.stderr or "").strip()[-500:]
+            if result is None or result.returncode:
+                # A dropped probe says nothing about the run, which is detached.
+                job["probe_failures"] += 1
+                if job["probe_failures"] >= MAX_CONSECUTIVE_PROBE_FAILURES:
+                    raise RuntimeError(
+                        f"lost contact with {pod.name} while running {label} "
+                        f"({job['probe_failures']} consecutive failed probes): {reason}"
+                    )
+                say(f"[{label}] probe failed ({job['probe_failures']}), "
+                    f"retrying: {reason}", flush=True)
+                continue
+            job["probe_failures"] = 0
             code, line, gpu = parse_probe(result.stdout)
             now = time.monotonic()
-            if line and line != reported:
+            if line and line != job["reported"]:
                 say(f"[{label}] {line}", flush=True)
-                reported = line
-                last_beat = now
-            elif now - last_beat >= heartbeat:
-                say(f"[{label}] {(now - start) / 60:.0f}m elapsed"
+                job["reported"] = line
+                job["last_beat"] = now
+            elif now - job["last_beat"] >= heartbeat:
+                say(f"[{label}] {(now - job['started']) / 60:.0f}m elapsed"
                     + (f", gpu {gpu}" if gpu else ""), flush=True)
-                last_beat = now
+                job["last_beat"] = now
             if code:
+                active.remove(job)
                 if code == "0":
-                    say(f"[{label}] finished in {(now - start) / 60:.1f}m", flush=True)
-                    return
-                raise RuntimeError(
-                    f"remote evaluation {label} failed ({code}): "
-                    f"{remote_log_tail(pod, log)}"
-                )
+                    say(f"[{label}] finished in {(now - job['started']) / 60:.1f}m",
+                        flush=True)
+                else:
+                    failures.append(
+                        f"remote evaluation {label} failed ({code}): "
+                        f"{remote_log_tail(pod, job['log'])}"
+                    )
+        if not pending and not active:
+            break
         if time.monotonic() >= deadline:
+            unfinished = [job["label"] for job in active] + \
+                         [job["label"] for job in pending]
             raise TimeoutError(
-                f"remote evaluation {label} did not finish within {timeout}s; "
-                f"last log: {remote_log_tail(pod, log)}"
+                f"remote evaluation {unfinished} did not finish within {timeout}s; "
+                f"last log: "
+                + (remote_log_tail(pod, active[0]["log"]) if active else "<not launched>")
             )
         time.sleep(interval)
+    if failures:
+        raise RuntimeError(" | ".join(failures))
 
 
-def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
+def checked_remote(pod: pods.Pod, argv: list[str], timeout: int, *,
+                   label: str, say=print) -> None:
+    """Run one evaluation on the pod, detached from the SSH session."""
+    run_remote_group(pod, [(argv, label)], timeout, parallel=1, say=say)
+
+
+def run(event: dict[str, Any], *, root: Path = ROOT, candidates_arg: str = "",
+        warm_map_arg: str = "", parallel: int | None = None,
+        resume: bool | None = None) -> int:
     context = approval_context(event)
-    candidate = contained_candidate(root, context.get("candidate_path"))
+    candidates = parse_candidates(root, context, candidates_arg)
     estimated_hours = float(context.get("estimated_hours") or 2.0)
     if not math.isfinite(estimated_hours) or estimated_hours <= 0:
         raise ValueError("estimated_hours must be a positive finite number")
@@ -206,6 +368,13 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
     if not math.isfinite(train_hours) or train_hours <= 0:
         raise ValueError("CASCADE_TRAIN_HOURS must be positive")
     seeds = parse_seeds(os.environ.get("CASCADE_EVAL_SEEDS", "0,1,2"))
+    if parallel is None:
+        parallel = parallel_arg(os.environ.get("CASCADE_EVAL_PARALLEL", "1"))
+    if resume is None:
+        resume = env_flag("CASCADE_EVAL_RESUME")
+    warm_map = parse_warm_map(
+        warm_map_arg or os.environ.get("CASCADE_WARM_MAP", ""), seeds, root)
+    pull_ckpts = env_flag("CASCADE_PULL_CKPTS", "1")
 
     state_path = Path(os.environ.get(
         "CASCADE_MINER_STATE", root / "runs/controller-state.json"
@@ -223,7 +392,11 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
     pod_name = f"cascade-eval-{int(time.time())}-{os.getpid()}"
     pod: pods.Pod | None = None
     puller: subprocess.Popen | None = None
-    rented = False
+
+    arm_names = ["king-control"] + [candidate.name for candidate in candidates]
+    # The estimate in the approval assumes one candidate; the pod's TTL must
+    # cover what is actually queued even if every training runs serially.
+    needed_hours = max(estimated_hours, len(seeds) * len(arm_names) * train_hours)
 
     (root / "runs").mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="king-control-", dir=root / "runs") as staging:
@@ -240,24 +413,49 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
             )
 
         try:
-            ttl_hours = max(1, math.ceil(estimated_hours + 1))
-            pods.rent(pod_name, ttl_hours=ttl_hours,
-                      gpu=os.environ.get("CASCADE_GPU", "RTX4090"))
-            rented = True
-            pod = wait_for_pod(pod_name)
-            pods.assert_single_gpu()
-            pods.check_ttl_covers(pod, estimated_hours)
-            pods.provision(pod, str(cascade_dir), [str(king), str(candidate)], str(pools_root))
+            ttl_hours = max(1, math.ceil(needed_hours + 1))
+            # rent() waits for the pod and returns it, and stops the rental
+            # itself if the pod never becomes reachable.
+            pod = pods.rent(pod_name, ttl_hours=ttl_hours,
+                            gpu=os.environ.get("CASCADE_GPU", "RTX4090"))
+            pods.assert_single_gpu(pod)
+            pods.check_ttl_covers(pod, needed_hours)
+            pods.provision(pod, str(cascade_dir),
+                           [str(king)] + [str(candidate) for candidate in candidates],
+                           str(pools_root))
             pod.push(f"{root / 'miner'}/", f"{pods.REMOTE_ROOT}/miner/")
+            for warm in sorted(set(warm_map.values())):
+                pod.push(f"{warm}/", f"{pods.REMOTE_ROOT}/warm/{warm.name}/")
             pods.assert_deps(pod)
 
             local_scores = root / "scores"
             local_scores.mkdir(parents=True, exist_ok=True)
-            puller = pods.start_puller([pod], str(local_scores))
-            remote_timeout = max(3600, math.ceil(estimated_hours * 3600))
+            local_ckpts = root / "ckpts"
+            if resume:
+                # Trained-but-unscored arms resume from their pulled checkpoint;
+                # miner.evaluate skips training when TRAINED.json is present
+                # (and refuses a checkpoint trained under a different warm init).
+                for seed in seeds:
+                    for name in arm_names:
+                        tag = f"{name}__seed{seed}"
+                        ckpt = local_ckpts / tag
+                        if (ckpt / "TRAINED.json").is_file() and \
+                                not (local_scores / tag / "summary.json").is_file():
+                            print(f"[{tag}] pushing completed local checkpoint; "
+                                  "training will be skipped", flush=True)
+                            pod.push(f"{ckpt}/", f"{pods.REMOTE_ROOT}/ckpts/{tag}/")
+            puller = pods.start_puller(
+                [pod], str(local_scores),
+                local_ckpts=str(local_ckpts) if pull_ckpts else None)
+            remote_timeout = max(3600, math.ceil(needed_hours * 3600))
             for seed in seeds:
-                for name in ("king-control", candidate.name):
-                    checked_remote(pod, [
+                jobs: list[tuple[list[str], str]] = []
+                for name in arm_names:
+                    tag = f"{name}__seed{seed}"
+                    if resume and (local_scores / tag / "summary.json").is_file():
+                        print(f"[{tag}] already scored locally — skipping", flush=True)
+                        continue
+                    argv = [
                         pods.REMOTE_PY, "-m", "miner.evaluate",
                         f"{pods.REMOTE_ROOT}/generators/{name}",
                         "--chain-toml", "/root/cascade/chain.toml",
@@ -265,7 +463,13 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
                         "--scores-root", f"{pods.REMOTE_ROOT}/scores",
                         "--ckpt-root", f"{pods.REMOTE_ROOT}/ckpts",
                         "--seed", str(seed), "--train-hours", str(train_hours),
-                    ], timeout=remote_timeout, label=f"{name}-seed{seed}")
+                    ]
+                    if seed in warm_map:
+                        argv += ["--warm-init",
+                                 f"{pods.REMOTE_ROOT}/warm/{warm_map[seed].name}"]
+                    jobs.append((argv, f"{name}-seed{seed}"))
+                if jobs:
+                    run_remote_group(pod, jobs, remote_timeout, parallel=parallel)
             pod.pull(f"{pods.REMOTE_ROOT}/scores/", str(local_scores))
         finally:
             if puller is not None:
@@ -280,16 +484,38 @@ def run(event: dict[str, Any], *, root: Path = ROOT) -> int:
                     pod.pull(f"{pods.REMOTE_ROOT}/scores/", str(root / "scores"))
                 finally:
                     pods.stop(pod.name)
-            elif rented:
-                # Rental may succeed before pod discovery. Stop by its unique name.
-                pods.stop(pod_name)
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--candidates", default="",
+                        help="comma-separated generator names or paths under "
+                             "generators/, all evaluated against the one king "
+                             "control; overrides the approval context")
+    parser.add_argument("--warm-map",
+                        default=os.environ.get("CASCADE_WARM_MAP", ""),
+                        help='explicit seed→warm-init pairing, e.g. '
+                             '"0=warm/r27,1=warm/r29". Must cover every eval '
+                             'seed; both arms of a seed share its init.')
+    parser.add_argument("--parallel", type=parallel_arg,
+                        default=parallel_arg(
+                            os.environ.get("CASCADE_EVAL_PARALLEL", "1")),
+                        help="max concurrent trainings on the pod "
+                             "(default 1: strictly serial)")
+    parser.add_argument("--resume", action="store_true",
+                        default=env_flag("CASCADE_EVAL_RESUME"),
+                        help="skip arms already scored locally and push "
+                             "completed local checkpoints back to the pod. "
+                             "Only for re-running the IDENTICAL candidate "
+                             "after a pod death — resuming a changed "
+                             "candidate keeps stale results.")
+    args = parser.parse_args(argv)
     try:
         event = json.loads(os.environ.get("CASCADE_MINER_EVENT", "{}"))
-        return run(event)
+        return run(event, candidates_arg=args.candidates,
+                   warm_map_arg=args.warm_map, parallel=args.parallel,
+                   resume=args.resume)
     except Exception as exc:  # noqa: BLE001 - command boundary must exit nonzero
         print(f"gpu evaluation failed: {exc}", file=sys.stderr)
         return 1
