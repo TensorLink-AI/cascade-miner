@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "d0ea6f4",
-    "revision_date": "2026-09-03",
+    "revision": "bb09d13",
+    "revision_date": "2026-09-06",
     "chain_schema_version": 1
   },
   "keys": {
