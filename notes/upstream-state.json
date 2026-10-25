@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "fa84d76",
-    "revision_date": "2026-10-06",
+    "revision": "72b9e9a",
+    "revision_date": "2026-10-23",
     "chain_schema_version": 1
   },
   "keys": {
@@ -213,6 +213,7 @@
     "scoring.margin_warmup_blocks_v2",
     "scoring.mv_score_from_block",
     "scoring.prior_contract_digest",
+    "scoring.promotion_carry_from_block",
     "scoring.tenure_blocks_from_block",
     "scoring.win_margin_end_v2",
     "scoring.win_margin_start_prev",
@@ -528,6 +529,12 @@
       "status": "proposed",
       "date": "2026-10-01",
       "title": "Dethrone bar v2: increment-unit margin 0.4 for a fresh king, decaying to 0.2 over 18000 blocks of tenure — decided on chain by validator readiness (DEC-CA-0045), typed block = owner override"
+    },
+    {
+      "id": "DEC-CA-0050",
+      "status": "proposed",
+      "date": "2026-10-14",
+      "title": "Staged-promotion carry: a dethrone between staging and effective_era keeps the staged promotion, and a prior-reign record is never timed on the new king's clock — decided on chain (DEC-CA-0045), typed block = owner override"
     },
     {
       "id": "NOTE-ca-operational-invariants",
