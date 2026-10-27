@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "72b9e9a",
-    "revision_date": "2026-10-23",
+    "revision": "a2e3af7",
+    "revision_date": "2026-10-27",
     "chain_schema_version": 1
   },
   "keys": {
@@ -118,6 +118,8 @@
   "missing_keys": [],
   "untracked_keys": [
     "eval.bench_hold_max_hours",
+    "eval.bench_paired",
+    "eval.bench_workers",
     "eval.benchmark_max_series",
     "eval.benchmark_num_samples",
     "eval.benchmark_project_dir",
@@ -142,6 +144,7 @@
     "generator.channel_corr_mode",
     "generator.max_channel_corr",
     "generator.max_missing_frac",
+    "generator.min_channels",
     "generator.sandbox_image",
     "generator.sandbox_mode",
     "generator.sandbox_python",
@@ -162,6 +165,7 @@
     "round.duel_from_block",
     "round.duel_seat_all",
     "round.era_settlements",
+    "round.eval_n_windows",
     "round.funded_activation_block",
     "round.funded_capacity_probe",
     "round.funded_capacity_reserve",
@@ -187,18 +191,27 @@
     "round.heat_guard_floor_seconds",
     "round.heat_infra_requeues",
     "round.max_rounds_per_day",
+    "round.ops_gpu_cooldown_seconds",
+    "round.ops_gpu_failure_threshold",
+    "round.ops_gpu_failure_window_seconds",
+    "round.ops_max_active_per_coldkey",
     "round.payer_vault_dir",
     "round.rolling_from_block",
     "round.skip_unfunded_rounds",
     "round.submission_vault_dir",
     "round.tie_runoff_phase_seconds",
     "round.worker_code_fingerprint",
+    "scoring.bench_gate_min_items",
+    "scoring.bench_gate_min_win_rate",
+    "scoring.bench_gate_mode",
+    "scoring.bench_gate_tolerance",
     "scoring.burn_uid",
     "scoring.cascade_reign_blocks",
     "scoring.cohort_maxt_from_block",
     "scoring.cohort_maxt_increment_from_block",
     "scoring.contract_from_block",
     "scoring.declared_contract_from_block",
+    "scoring.entry_fault_from_block",
     "scoring.era_king_from_block",
     "scoring.forfeit_from_block",
     "scoring.forfeit_hotkeys",
@@ -213,7 +226,6 @@
     "scoring.margin_warmup_blocks_v2",
     "scoring.mv_score_from_block",
     "scoring.prior_contract_digest",
-    "scoring.promotion_carry_from_block",
     "scoring.tenure_blocks_from_block",
     "scoring.win_margin_end_v2",
     "scoring.win_margin_start_prev",
@@ -268,7 +280,7 @@
     },
     {
       "id": "DEC-CA-0003",
-      "status": "active",
+      "status": "superseded",
       "date": "2026-07-23",
       "title": "Provisioner rules of escalation: deadline-bounded ladder walking, 2x floor"
     },
@@ -280,13 +292,13 @@
     },
     {
       "id": "DEC-CA-0005",
-      "status": "active",
+      "status": "superseded",
       "date": "2026-07-21",
       "title": "Cascade warm-start: revert on testnet, sequence reign-clock determinism before consumption"
     },
     {
       "id": "DEC-CA-0006",
-      "status": "active",
+      "status": "superseded",
       "date": "2026-07-25",
       "title": "Heat screen: LCB machinery is a diagnostic, never the selection rule"
     },
@@ -310,7 +322,7 @@
     },
     {
       "id": "DEC-CA-0011",
-      "status": "active",
+      "status": "superseded",
       "date": "2026-07-30",
       "title": "Heat standings publish when the heat settles, mirrored publicly per round"
     },
@@ -346,7 +358,7 @@
     },
     {
       "id": "DEC-CA-0017",
-      "status": "active",
+      "status": "superseded",
       "date": "2026-08-15",
       "title": "Promotion never ratchets the shared init downhill: a ripe reign with only worse-benching candidates holds the live generation"
     },
@@ -442,31 +454,31 @@
     },
     {
       "id": "DEC-CA-0033",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-08-26",
       "title": "The measured variance bundle: EMA finished-form checkpoints, N-seed generation mix, warm-started re-warmup — shipped inert behind drop-when-default"
     },
     {
       "id": "DEC-CA-0034",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-08-26",
       "title": "Init-baseline: a null baseline for KOTH — heat shadow row + duel-side dethrone floor (gift-gate shaped), shipped off"
     },
     {
       "id": "DEC-CA-0035",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-08-27",
       "title": "Toto2-aligned optimizer constants + warm-start LR scale — the measured recipe that beats the converged init, shipped inert behind drop-when-default"
     },
     {
       "id": "DEC-CA-0036",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-08-28",
       "title": "Miner-funded challenger legs under elastic-cadence rounds; king and confirmation legs stay operator-funded"
     },
     {
       "id": "DEC-CA-0037",
-      "status": "accepted",
+      "status": "superseded",
       "date": "2026-09-03",
       "title": "Duel-only rounds on the operator's final fleet: no heat, the whole field seats in reveal order, the fleet sizes to the epoch, one block-gated flip with the scored horizon ladder"
     },
@@ -490,7 +502,7 @@
     },
     {
       "id": "DEC-CA-0041",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-09-08",
       "title": "Multivariate scoring for the private-pool duel is GIFT-Eval-weighted (per-variate metric, a window counts ONCE with its channels averaged in) and lands eval-first: the round point statistic is made to agree with the source-cluster bootstrap, block-gated and bit-identical on the univariate pool"
     },
@@ -502,45 +514,153 @@
     },
     {
       "id": "DEC-CA-0043",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-09-20",
       "title": "Rolling intake + era king: challengers train the moment they are funded, verdicts settle on a 3h grid, the king's leg is trained once per 12h era and cached — every behaviour change block-gated at ONE rollover"
     },
     {
+      "id": "DEC-CA-0044",
+      "status": "accepted",
+      "date": "2026-09-22",
+      "title": "Rolling top-k promotion: live members compete with the reign's candidates for the same k slots; a candidate enters only by beating the worst live member, and a promotion fires only when membership changes"
+    },
+    {
       "id": "DEC-CA-0045",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-09-21",
       "title": "Stake-weighted activation: validators signal readiness on chain, the DEC-CA-0043 rollover locks in at the first boundary where 51% of eligible validator stake has signalled and flips at the next boundary — no typed-in block"
     },
     {
       "id": "DEC-CA-0047",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-09-27",
       "title": "Token billing with a proportional width bonus: budget_denomination = \\\"points+mv<PCT>\\\" bills every channel and discounts C > 1 series by 100/(100+PCT), so the budget (not the wall, not the GPU drawn) decides every leg's tokens"
     },
     {
       "id": "DEC-CA-0048",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-09-28",
       "title": "King forfeiture + admission denylist: a listed hotkey leaves the throne and the court at a set block (consensus, release-then-activate); the trainer refuses its admissions and never trains it as king"
     },
     {
       "id": "DEC-CA-0049",
-      "status": "proposed",
+      "status": "accepted",
       "date": "2026-10-01",
       "title": "Dethrone bar v2: increment-unit margin 0.4 for a fresh king, decaying to 0.2 over 18000 blocks of tenure — decided on chain by validator readiness (DEC-CA-0045), typed block = owner override"
     },
     {
       "id": "DEC-CA-0050",
       "status": "proposed",
-      "date": "2026-10-14",
-      "title": "Staged-promotion carry: a dethrone between staging and effective_era keeps the staged promotion, and a prior-reign record is never timed on the new king's clock — decided on chain (DEC-CA-0045), typed block = owner override"
+      "date": "2026-10-08",
+      "title": "v2 incentive mechanism: Cascade-MOE-28M king lineage (lane A) + a concurrent domain-expert lane (lane B) that trains a frozen-router expert subset for one tsbench-forge domain, merges into the king, and pays on a 5-round decay"
+    },
+    {
+      "id": "DEC-CA-0051",
+      "status": "proposed",
+      "date": "2026-10-10",
+      "title": "Port the chain layer to bittensor 11.3.0 with 10.5 bit-compatibility: reveal encoding via bittensor_core (never timelock.encrypt), stake from the typed metagraph (float32, == 10.5 S), weights float32-cast before u16 quantisation"
+    },
+    {
+      "id": "DEC-CA-0052",
+      "status": "proposed",
+      "date": "2026-10-17",
+      "title": "Direct ~220M MoE runs on cascade's infrastructure: miner-chosen Lium/Vast/RunPod pods on the payer's own key, SSH dispatch with orchestrator harvest to Hippius, emission rewards, and validators that check the trainer's signed scores instead of evaluating"
+    },
+    {
+      "id": "DEC-CA-0053",
+      "status": "proposed",
+      "date": "2026-10-18",
+      "title": "Generation moves off the GPU pod: an operator-run CPU tier on Targon and Shadeform materialises each leg's corpus into a tagged Hippius dataset, metered in CPU budget instead of GPU feed rate; series lengths up to ~32k behind a scheduled context"
+    },
+    {
+      "id": "DEC-CA-0054",
+      "status": "proposed",
+      "date": "2026-10-18",
+      "title": "A dethrone must also not regress on public benchmarks: no suite of GIFT-Eval / BOOM / TIME significantly worse on a paired test, and the six-number geomean strictly better — read from trainer-signed per-item rows"
+    },
+    {
+      "id": "DEC-CA-0055",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "v2 launch economics: 95% pre-launch burn, the carried king capped at 5% until a v2 crowning, a 7-day random-init window before the reign clock starts, king-only self-improvement promotions, a lane-A share ladder (new king at a margin-tiered start, 25-80% by its crowning LCB, 50% in level units; +10% per verified warm start up to 95%, a failed check drops to 10%; the last former king 5% for 5 days), and the king funds its own leg (a failing key slashes it to 1%, escalating: >= 6 eras for a first lapse, the rest of the reign for a second)"
+    },
+    {
+      "id": "DEC-CA-0056",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Lane C: miner-funded fine-tune recipes on the king checkpoint, per-target, judged on a separate per-target eval, paid in per-target slots; emissions A 50 / B 25 / C 25 once armed (50 / 50 / 0 until then)"
+    },
+    {
+      "id": "DEC-CA-0057",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Verdict and payout constants ship as an owner-signed network config, adopted by stake (51 %) and applied at its era-start effective block; validators update only for new code, locked training terms or security roots"
+    },
+    {
+      "id": "DEC-CA-0058",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "One owner main validator scores; satellite validators replay its signed receipts (verdict, ladder, lanes, weights) from the recorded rows and set the vector that replay produces — no model, no pool, no torch"
+    },
+    {
+      "id": "DEC-CA-0059",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Lane B legs may declare up to 3 domains: one jointly trained checkpoint over the union of the declared domains' experts, each domain judged and paid separately (alpha/k), merged once"
+    },
+    {
+      "id": "DEC-CA-0060",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Every leg keeps the same token budget; a miner may choose which GPU type (and later how many GPUs) its own key rents, trading money for speed, never for compute"
+    },
+    {
+      "id": "DEC-CA-0061",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Lane A public gate: four suites (GIFT-Eval, BOOM, TIME, FEV); rule v2 (2026-10-20) avg_noninf_winrate — per task, better on average, no suite significantly worse, win rate >= 0.5; the private pool still decides by geomean LCB"
+    },
+    {
+      "id": "DEC-CA-0062",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Lane D: a distillation / real-data lane — wired as an inert placeholder (config table, wiring points), details to be filled in by the owner"
+    },
+    {
+      "id": "DEC-CA-0063",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "Lane-A public benchmarks run on the main validator's GPU, and only for a challenger that has already won the private pool (plus the king and the init it is compared with). Other validators and satellites read the main validator's signed report."
+    },
+    {
+      "id": "DEC-CA-0064",
+      "status": "proposed",
+      "date": "2026-10-19",
+      "title": "MarketCast: a lane-C fine-tune eval on a pinned Timestral-28M base, judged paired vs the untouched base on forward-only market windows, one lane-C slot per suite (mkt:returns, mkt:vol, …); built (pool, trainer, validator, audit, intake), shipped off at from_block = 0"
+    },
+    {
+      "id": "DEC-CA-0065",
+      "status": "accepted",
+      "date": "2026-10-27",
+      "title": "Optional per-channel groups for the Cascade MoE Base generator contract"
+    },
+    {
+      "id": "DEC-CA-0066",
+      "status": "accepted",
+      "date": "2026-10-27",
+      "title": "Fixed 32-channel v2 generators, broader private pools and source-family evidence"
     },
     {
       "id": "NOTE-ca-operational-invariants",
       "status": "active",
       "date": "2026-07-14",
       "title": "Operational invariants (hard-learned)"
+    },
+    {
+      "id": "NOTE-ca-submission-surface-roadmap",
+      "status": "active",
+      "date": "2026-08-13",
+      "title": "Miner submission surface and scaling ladder: the staged expansion roadmap"
     }
   ]
 }
