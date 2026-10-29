@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "4330f86",
-    "revision_date": "2026-10-28",
+    "revision": "7d2c098",
+    "revision_date": "2026-10-29",
     "chain_schema_version": 1
   },
   "keys": {
@@ -142,6 +142,8 @@
     "eval.scored_horizons",
     "eval.window_pool",
     "generator.channel_corr_mode",
+    "generator.king_min_channels",
+    "generator.king_min_channels_refs",
     "generator.max_channel_corr",
     "generator.max_missing_frac",
     "generator.min_channels",
