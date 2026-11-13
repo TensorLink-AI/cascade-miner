@@ -3,7 +3,7 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "2d9ad1c",
+    "revision": "3d4bfa7",
     "revision_date": "2026-11-13",
     "chain_schema_version": 1
   },
@@ -85,7 +85,7 @@
     "training.max_train_seconds": 18000,
     "training.corpus_mode": "stream_cpu",
     "training.expected_gpu": "",
-    "training.train_image_digest": "sha256:43c07d4207d7693517d74203f6783fdd2c2f91e3d475f38db38e4798ae97785e",
+    "training.train_image_digest": "sha256:205ff68242ae78fc923c8a5c7d2c4a4eccdd8afc7c7739cae99187475ba96d6f",
     "training.context_length": 4096,
     "training.horizon": 64,
     "training.warm_lr_scale": 0.125,
