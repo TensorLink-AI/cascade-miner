@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "daacf56",
-    "revision_date": "2026-11-12",
+    "revision": "2d9ad1c",
+    "revision_date": "2026-11-13",
     "chain_schema_version": 1
   },
   "keys": {
@@ -140,6 +140,9 @@
     "eval.run_benchmarks",
     "eval.scored_from_block",
     "eval.scored_horizons",
+    "eval.shared_ladder_feature",
+    "eval.shared_ladder_from_block",
+    "eval.shared_ladder_windows",
     "eval.window_pool",
     "generator.channel_corr_mode",
     "generator.king_min_channels",
@@ -657,6 +660,12 @@
       "status": "accepted",
       "date": "2026-11-01",
       "title": "Worker image decoupled from the training contract, plus the v2 verdict budget (stake-majority vote)"
+    },
+    {
+      "id": "DEC-CA-0068",
+      "status": "accepted",
+      "date": "2026-11-12",
+      "title": "Shared-series horizon ladder: every scored horizon judges the SAME 4000 series, NaN-padded where a series is too short — decided on chain by validator readiness (DEC-CA-0045), typed block = owner override"
     },
     {
       "id": "NOTE-ca-operational-invariants",
