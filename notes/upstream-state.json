@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "e488d2d",
-    "revision_date": "2026-11-13",
+    "revision": "4f2c277",
+    "revision_date": "2026-11-14",
     "chain_schema_version": 1
   },
   "keys": {
@@ -58,9 +58,9 @@
       "cascade.validator",
       "cascade.shared.chain"
     ],
-    "round.epoch_blocks": 3600,
-    "round.epoch_blocks_prev": 0,
-    "round.epoch_activation_block": 0,
+    "round.epoch_blocks": 900,
+    "round.epoch_blocks_prev": 3600,
+    "round.epoch_activation_block": 9136800,
     "round.round_hours": 12.0,
     "round.reveal_margin_blocks": 25,
     "round.heat_train_hours": 1.0,
