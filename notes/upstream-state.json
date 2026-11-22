@@ -3,7 +3,7 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "43a7331d",
+    "revision": "cc804cf3",
     "revision_date": "2026-11-22",
     "chain_schema_version": 1
   },
@@ -703,6 +703,12 @@
       "status": "active",
       "date": "2026-08-13",
       "title": "Miner submission surface and scaling ladder: the staged expansion roadmap"
+    },
+    {
+      "id": "STORAGE-LANE-D",
+      "status": "proposed",
+      "date": "2026-11-22",
+      "title": "Lane D vault: the miner upload path, chosen from the W3a live Hippius probe"
     }
   ]
 }
