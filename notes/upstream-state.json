@@ -3,8 +3,8 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "5ce1f88",
-    "revision_date": "2026-11-21",
+    "revision": "43a7331d",
+    "revision_date": "2026-11-22",
     "chain_schema_version": 1
   },
   "keys": {
@@ -215,6 +215,7 @@
     "scoring.cohort_maxt_from_block",
     "scoring.cohort_maxt_increment_from_block",
     "scoring.contract_from_block",
+    "scoring.crowning_anchor_from_block",
     "scoring.declared_contract_from_block",
     "scoring.entry_fault_from_block",
     "scoring.era_king_from_block",
@@ -627,7 +628,7 @@
     },
     {
       "id": "DEC-CA-0062",
-      "status": "proposed",
+      "status": "superseded",
       "date": "2026-10-19",
       "title": "Lane D: a distillation / real-data lane — wired as an inert placeholder (config table, wiring points), details to be filled in by the owner"
     },
@@ -666,6 +667,30 @@
       "status": "accepted",
       "date": "2026-11-12",
       "title": "Shared-series horizon ladder: every scored horizon judges the SAME 4000 series, NaN-padded where a series is too short — decided on chain by validator readiness (DEC-CA-0045), typed block = owner override"
+    },
+    {
+      "id": "DEC-CA-0069",
+      "status": "proposed",
+      "date": "2026-11-16",
+      "title": "MarketCast recipe code hooks: a recipe may ship train.py (any loss, masking, parameter groups, curriculum) run by the MarketCast leg in a sealed child; the verdict, report and audit are unchanged"
+    },
+    {
+      "id": "DEC-CA-0070",
+      "status": "accepted",
+      "date": "2026-11-21",
+      "title": "Lane D: open weights on our architecture. Miners train anywhere and submit BF16 weights for the cascade_pyramid model; we only evaluate on forward-only private windows (data time AND first-seen after commit), with a confirmation duel, an unpaid house entry, a rotating public gate, a cross-lane sentinel and per-lane coldkey caps"
+    },
+    {
+      "id": "DEC-CA-0071",
+      "status": "accepted",
+      "date": "2026-11-21",
+      "title": "Lane B: improve one, regress none — a leg may target a public benchmark suite (GIFT-Eval, BOOM, TIME, FEV) as well as a pool domain or horizon; it wins only by significantly improving that suite while regressing nowhere, including the private cascade pool, a fixed anchor king, and the suite's own other metric"
+    },
+    {
+      "id": "DEC-CA-0072",
+      "status": "accepted",
+      "date": "2026-11-20",
+      "title": "Post-gate kings keep their recorded crowning block as the tenure anchor ([scoring] crowning_anchor_from_block, release-then-activate)"
     },
     {
       "id": "NOTE-ca-operational-invariants",
