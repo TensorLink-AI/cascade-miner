@@ -3,7 +3,7 @@
   "generated_by": "scripts/upstream_state.py",
   "generated_from": {
     "repo": "TensorLink-AI/cascade",
-    "revision": "5120e00a",
+    "revision": "9917c834",
     "revision_date": "2026-11-23",
     "chain_schema_version": 1
   },
@@ -706,8 +706,8 @@
     },
     {
       "id": "STORAGE-LANE-D",
-      "status": "proposed",
-      "date": "2026-11-22",
+      "status": "accepted",
+      "date": "2026-11-23",
       "title": "Lane D vault: the miner upload path, chosen from the W3a live Hippius probe"
     }
   ]
